@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Maestro PJe - Gestão de Pautas</title>
+  
+  <!-- Configurações PWA Android -->
+  <meta name="theme-color" content="#0284C7">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+  <!-- ========================================================== -->
+  <!-- TELA 1: AUTENTICAÇÃO E VINCULAÇÃO DE SUBSEÇÃO             -->
+  <!-- ========================================================== -->
+  <div id="screenLogin" class="screen active">
+    <div class="login-container">
+      <div class="login-brand">
+        <div class="brand-badge">TRF5 • JUSTIÇA FEDERAL</div>
+        <div class="brand-icon">⚖️</div>
+        <h1>Maestro PJe Mobile</h1>
+        <p class="brand-sub">Acompanhamento de Pautas &amp; Importação WhatsApp</p>
+      </div>
+
+      <div class="card login-card">
+        <div class="card-header">
+          <h3>Acesso Autorizado</h3>
+          <p class="text-muted">Acesso restrito à sua Subseção cadastrada na extensão</p>
+        </div>
+
+        <form id="formLogin">
+          <!-- BLOCO COMPACTO: PAREAMENTO RÁPIDO COM CÓDIGO DA VARA -->
+          <div class="wpp-code-box">
+            <label for="loginCodigoConexao" class="wpp-code-label">⚡ Conexão Rápida (Código MAESTRO::...)</label>
+            <div class="wpp-code-row">
+              <input type="text" id="loginCodigoConexao" class="form-control wpp-code-input" placeholder="Cole o código gerado no Dashboard...">
+              <button type="button" id="btnAplicarCodigoMobile" class="btn btn-primary btn-sm">Aplicar</button>
+            </div>
+            <div id="loginCodigoStatus" class="wpp-code-status" style="display: none;"></div>
+          </div>
+
+          <div class="form-group">
+            <label for="loginSubsecao">Subseção Judiciária</label>
+            <select id="loginSubsecao" class="form-control" required>
+              <option value="">Selecione sua subseção...</option>
+              <option value="sobral" selected>Sobral (18ª, 19ª e 31ª Varas)</option>
+              <option value="fortaleza">Fortaleza (Sede JFCE)</option>
+              <option value="juazeiro_do_norte">Juazeiro do Norte</option>
+              <option value="limoeiro_do_norte">Limoeiro do Norte</option>
+              <option value="crateus">Crateús</option>
+              <option value="quixada">Quixadá</option>
+              <option value="taua">Tauá</option>
+              <option value="iguatu">Iguatu</option>
+              <option value="itapipoca">Itapipoca</option>
+              <option value="maracanau">Maracanaú</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="loginCpf">CPF do Servidor ou Nome de Usuário</label>
+            <input type="text" id="loginCpf" class="form-control" placeholder="000.000.000-00 ou seu nome" required autocomplete="username">
+          </div>
+
+          <div class="form-group">
+            <label for="loginPin">PIN de Ativação / Senha da Subseção</label>
+            <input type="password" id="loginPin" class="form-control" placeholder="Digite o PIN da extensão" required autocomplete="current-password">
+            <small class="form-hint">O mesmo PIN configurado no Maestro PJe do seu computador</small>
+          </div>
+
+          <div class="advanced-toggle" id="btnToggleConfigAvancada" role="button" tabindex="0">
+            <span>⚙️ Parâmetros de Nuvem (Opcional)</span>
+            <span id="iconToggleAdv">▼</span>
+          </div>
+
+          <div id="boxConfigAvancada" class="advanced-box" style="display: none;">
+            <div class="form-group">
+              <label for="loginProjectId">ID do Projeto Firebase</label>
+              <input type="text" id="loginProjectId" class="form-control" placeholder="ex: maestro-pje-trf5">
+            </div>
+            <div class="form-group">
+              <label for="loginChaveNuvem">Chave de Criptografia da Subseção</label>
+              <input type="password" id="loginChaveNuvem" class="form-control" placeholder="Chave AES da Vara (se aplicável)">
+            </div>
+            <label class="wpp-checkbox-inline">
+              <input type="checkbox" id="chkLembrarChaveMobile" checked>
+              <span>Manter chave AES salva neste aparelho (para envio rápido)</span>
+            </label>
+          </div>
+
+          <button type="submit" id="btnLogin" class="btn btn-primary btn-block">
+            <span>Entrar e Sincronizar Pautas</span>
+            <span class="btn-arrow">➔</span>
+          </button>
+        </form>
+
+        <div id="loginMsg" class="alert-box" style="display: none;"></div>
+      </div>
+
+      <div class="login-footer">
+        <p>🔒 Governança e Acesso Restrito por Subseção</p>
+        <p class="text-xs">Compatível com a versão 2.3+ da Extensão Maestro PJe</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================== -->
+  <!-- TELA 2: APLICATIVO PRINCIPAL (PAUTAS, WHATSAPP E RELATÓRIOS) -->
+  <!-- ========================================================== -->
+  <div id="screenApp" class="screen">
+    
+    <!-- HEADER SUPERIOR -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="app-badge">MAESTRO PJE</div>
+        <div class="user-subsecao-badge" id="headerSubsecaoBadge">
+          <span class="sub-dot"></span>
+          <span id="lblNomeSubsecao">Sobral</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <button type="button" class="btn-icon" id="btnHeaderSyncPautas" title="Recarregar pautas">🔄</button>
+        <button type="button" class="btn-icon" id="btnHeaderLogout" title="Sair / Trocar usuário">🚪</button>
+      </div>
+    </header>
+
+    <!-- BARRA DE USUÁRIO E RESTRIÇÃO DE ESCOPO -->
+    <div class="user-status-strip">
+      <div class="status-info">
+        <span class="user-avatar">👤</span>
+        <div class="user-details">
+          <span class="user-name" id="lblUsuarioNome">Servidor Autorizado</span>
+          <span class="user-scope" id="lblEscopoRestricao">🔒 Acesso restrito à Subseção de Sobral</span>
+        </div>
+      </div>
+      <span class="badge-role" id="lblPerfilRole">Editor</span>
+    </div>
+
+    <!-- ABAS PRINCIPAIS (NAVEGAÇÃO) -->
+    <nav class="main-tabs">
+      <button type="button" class="tab-btn active" data-tab="tabDashboard">
+        <span class="tab-icon">📊</span>
+        <span>Visão Geral</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="tabPautas">
+        <span class="tab-icon">🗓️</span>
+        <span>Pautas</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="tabWhatsapp">
+        <span class="tab-icon">📲</span>
+        <span>WhatsApp</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="tabRelatorios">
+        <span class="tab-icon">📄</span>
+        <span>Relatórios</span>
+      </button>
+    </nav>
+
+    <!-- CONTEÚDO PRINCIPAL -->
+    <main class="main-content">
+      
+      <!-- ====================================================== -->
+      <!-- ABA 1: DASHBOARD / VISÃO GERAL                         -->
+      <!-- ====================================================== -->
+      <section id="tabDashboard" class="tab-content active">
+        
+        <!-- SELETOR DE MÊS/PERÍODO -->
+        <div class="period-selector-card">
+          <button type="button" class="btn-circle" id="btnMesAnterior" data-delta="-1">◀</button>
+          <div class="period-label">
+            <span class="period-month" id="lblMesAtual">Novembro</span>
+            <span class="period-year" id="lblAnoAtual">2026</span>
+          </div>
+          <button type="button" class="btn-circle" id="btnMesProximo" data-delta="1">▶</button>
+        </div>
+
+        <!-- CARDS DE KPIS PRINCIPAIS -->
+        <div class="kpi-grid">
+          <div class="kpi-card kpi-total">
+            <div class="kpi-icon">📋</div>
+            <div class="kpi-value" id="kpiTotalVagas">0</div>
+            <div class="kpi-label">Total de Vagas</div>
+            <div class="kpi-hint" id="kpiTotalPautas">0 pautas cadastradas</div>
+          </div>
+
+          <div class="kpi-card kpi-marcadas">
+            <div class="kpi-icon">🟢</div>
+            <div class="kpi-value" id="kpiMarcadas">0</div>
+            <div class="kpi-label">Perícias Marcadas</div>
+            <div class="kpi-progress">
+              <div class="progress-bar bar-green" id="barMarcadas" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <div class="kpi-card kpi-pendentes">
+            <div class="kpi-icon">🟡</div>
+            <div class="kpi-value" id="kpiPendentes">0</div>
+            <div class="kpi-label">Perícias Pendentes</div>
+            <div class="kpi-progress">
+              <div class="progress-bar bar-yellow" id="barPendentes" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <div class="kpi-card kpi-taxa">
+            <div class="kpi-icon">📈</div>
+            <div class="kpi-value" id="kpiTaxaOcupacao">0%</div>
+            <div class="kpi-label">Taxa de Ocupação</div>
+            <div class="kpi-hint">Marcadas vs Disponíveis</div>
+          </div>
+        </div>
+
+        <!-- DISTRIBUIÇÃO POR VARAS DA SUBSEÇÃO -->
+        <div class="section-card">
+          <div class="section-header">
+            <h4>⚖️ Vagas por Vara da Subseção</h4>
+            <span class="text-xs text-muted" id="lblQtdVaras">3 Varas</span>
+          </div>
+          <div class="varas-list" id="listaVarasKpi">
+            <!-- Renderizado via JavaScript -->
+          </div>
+        </div>
+
+        <!-- DISTRIBUIÇÃO POR CATEGORIA -->
+        <div class="section-card">
+          <div class="section-header">
+            <h4>🩺 Perícias por Categoria</h4>
+          </div>
+          <div class="category-breakdown">
+            <div class="cat-item">
+              <span class="cat-dot dot-blue"></span>
+              <span class="cat-name">Médica Geral / Esp.</span>
+              <strong class="cat-count" id="countCatMedica">0</strong>
+            </div>
+            <div class="cat-item">
+              <span class="cat-dot dot-green"></span>
+              <span class="cat-name">Social / Assistencial</span>
+              <strong class="cat-count" id="countCatSocial">0</strong>
+            </div>
+            <div class="cat-item">
+              <span class="cat-dot dot-orange"></span>
+              <span class="cat-name">Outras (Eng./Contábil)</span>
+              <strong class="cat-count" id="countCatOutras">0</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- ATALHOS RÁPIDOS -->
+        <div class="quick-actions">
+          <button type="button" class="btn btn-primary quick-action-full" id="btnQuickWhatsapp">
+            <span>📲 Colar Pauta(s) do WhatsApp → Planilha</span>
+          </button>
+          <button type="button" class="btn btn-outline" id="btnQuickRelatorio">
+            <span>📄 Gerar Relatório do Mês</span>
+          </button>
+          <button type="button" class="btn btn-outline" id="btnQuickVerPautas">
+            <span>🔍 Ver Lista Completa</span>
+          </button>
+        </div>
+
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- ABA 2: LISTAGEM DETALHADA DAS PAUTAS                   -->
+      <!-- ====================================================== -->
+      <section id="tabPautas" class="tab-content">
+        
+        <!-- BARRA DE FILTROS -->
+        <div class="filters-card">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="filtroTexto" placeholder="Buscar perito, vara, data...">
+            <button type="button" class="btn-clear" id="btnLimparBusca" style="display:none;">✕</button>
+          </div>
+
+          <div class="filter-pills">
+            <button type="button" class="pill active" data-filtro="todos">Todas (<span id="pillCountTodos">0</span>)</button>
+            <button type="button" class="pill pill-green" data-filtro="marcado">Marcadas (<span id="pillCountMarcadas">0</span>)</button>
+            <button type="button" class="pill pill-yellow" data-filtro="pendente">Pendentes (<span id="pillCountPendentes">0</span>)</button>
+          </div>
+
+          <div class="filter-row">
+            <select id="filtroVara" class="form-select-sm">
+              <option value="">Todas as Varas</option>
+            </select>
+
+            <select id="filtroCategoria" class="form-select-sm">
+              <option value="">Todas as Categorias</option>
+              <option value="medica">Médica</option>
+              <option value="social">Social</option>
+              <option value="outras">Outras</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- CONTADOR DE RESULTADOS -->
+        <div class="results-info">
+          <span id="lblQtdPautasFiltradas">Exibindo 0 pautas</span>
+          <span class="text-muted" id="lblSubsecaoEscopoFiltro">Subseção: Sobral</span>
+        </div>
+
+        <!-- LISTA DE CARDS DE PAUTAS -->
+        <div class="pautas-list" id="listaPautasCards">
+          <!-- Renderizado via JavaScript -->
+        </div>
+
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- ABA 3: IMPORTAÇÃO DO WHATSAPP PARA A PLANILHA         -->
+      <!-- ====================================================== -->
+      <section id="tabWhatsapp" class="tab-content">
+
+        <!-- BANNER DE FILA OFFLINE PENDENTE -->
+        <div id="bannerFilaPendenteMobile" class="wpp-offline-banner" style="display: none;">
+          <div>
+            <strong>⏳ Envio pendente (Offline):</strong>
+            <span id="lblQtdFilaOffline">0 pauta(s) aguardando conexão</span>
+          </div>
+          <button type="button" class="btn btn-sm btn-primary" id="btnReenviarFilaOffline">🔄 Reenviar</button>
+        </div>
+
+        <!-- CARD DE ENTRADA DE CONVERSA WHATSAPP -->
+        <div class="section-card">
+          <div class="section-header">
+            <h4>📲 Importar Pautas do WhatsApp</h4>
+            <span class="badge-role" id="badgePermissaoEnvioWpp">Editor</span>
+          </div>
+          <p class="text-xs text-muted" style="margin-bottom: 12px;">
+            Copie uma ou mais mensagens de pauta no WhatsApp (ou use <b>Compartilhar ➔ Maestro PJe</b>), cole abaixo e confira antes de enviar para a planilha <b>Escala &amp; Calendário</b>.
+          </p>
+
+          <div class="wpp-actions-row">
+            <button type="button" class="btn btn-primary btn-sm wpp-btn-paste" id="btnColarWhatsAppMobile">
+              <span>📋 Colar do WhatsApp</span>
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" id="btnExemploTextoWpp">
+              <span>💡 Exemplo</span>
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" id="btnLimparTextoWpp">
+              <span>🧹 Limpar</span>
+            </button>
+          </div>
+
+          <textarea
+            id="txtConversaWhatsApp"
+            class="form-control wpp-textarea"
+            rows="6"
+            placeholder="Cole aqui 1 ou várias mensagens de pauta copiadas do WhatsApp...&#10;&#10;Ex: [24/11 09:40] Dra. Bárbara: Posso atender dias 07/12 e 14/12 às 08h30 (15 vagas), 19ª Vara, na Justiça Federal."></textarea>
+
+          <div class="wpp-defaults-grid">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label for="selVaraPadraoWpp">Vara Padrão (se omitida)</label>
+              <select id="selVaraPadraoWpp" class="form-select-sm"></select>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label for="selSituacaoPadraoWpp">Situação Inicial</label>
+              <select id="selSituacaoPadraoWpp" class="form-select-sm">
+                <option value="Não marcado" selected>⚪ Não marcado</option>
+                <option value="Em marcação">🟡 Em marcação</option>
+                <option value="Marcado">🟢 Marcado</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="wpp-actions-row" style="margin-top: 12px; margin-bottom: 0;">
+            <button type="button" class="btn btn-secondary btn-sm wpp-btn-parse" id="btnInterpretarWpp">
+              <span>🔎 Interpretar Pauta(s)</span>
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" id="btnAddPautaManualWpp">
+              <span>➕ Pauta Manual</span>
+            </button>
+          </div>
+        </div>
+
+        <datalist id="datalistPeritosMobile"></datalist>
+
+        <!-- PRÉVIA EDITÁVEL DAS PAUTAS DETECTADAS -->
+        <div id="areaPreviewImportWpp" style="display: none;">
+          <div class="results-info" style="margin-top: 4px;">
+            <span id="lblResumoImportWpp">0 pauta(s) pronta(s) para envio</span>
+            <button type="button" class="btn btn-outline btn-sm" id="btnSelecionarTodasImportWpp" style="padding: 4px 8px; font-size: 11px;">✓ Todas</button>
+          </div>
+
+          <div id="boxAlertasImportWpp" style="display: none;"></div>
+
+          <div id="listaCardsImportWpp" class="wpp-cards-list">
+            <!-- Cards editáveis gerados via app.js -->
+          </div>
+
+          <div class="wpp-submit-bar">
+            <button type="button" class="btn btn-primary btn-block" id="btnEnviarPautasNuvemWpp">
+              <span>☁️ Enviar para a Planilha da Extensão</span>
+            </button>
+            <div id="msgResultadoImportWpp" class="alert-box" style="display: none;"></div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- ABA 4: GERAÇÃO E EXPORTAÇÃO DE RELATÓRIOS              -->
+      <!-- ====================================================== -->
+      <section id="tabRelatorios" class="tab-content">
+        
+        <div class="section-card">
+          <div class="section-header">
+            <h4>📑 Centro de Relatórios</h4>
+            <span class="badge-subsecao-lock" id="lblRelatorioSubsecao">Sobral</span>
+          </div>
+          <p class="text-sm text-muted">
+            Gere relatórios oficiais das pautas, perícias marcadas e pendentes restritos à sua subseção.
+          </p>
+        </div>
+
+        <!-- CARD 1: RELATÓRIO OFICIAL EM PDF -->
+        <div class="report-action-card">
+          <div class="report-icon-box icon-pdf">📄</div>
+          <div class="report-details">
+            <h5>Relatório de Pautas (PDF)</h5>
+            <p>Formato oficial institucional para impressão ou envio com resumo de marcadas e pendentes.</p>
+            <div class="report-buttons">
+              <button type="button" class="btn btn-primary btn-sm" id="btnRelPdfMes">
+                <span>Imprimir / Salvar PDF (Mês Atual)</span>
+              </button>
+              <button type="button" class="btn btn-outline btn-sm" id="btnRelPdfCompleto">
+                <span>PDF de Todas as Pautas</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- CARD 2: PLANILHA EXCEL / CSV -->
+        <div class="report-action-card">
+          <div class="report-icon-box icon-csv">📊</div>
+          <div class="report-details">
+            <h5>Planilha de Pautas (CSV / Excel)</h5>
+            <p>Exportação de dados tabulares para acompanhamento de pautas, vagas e perícias.</p>
+            <div class="report-buttons">
+              <button type="button" class="btn btn-secondary btn-sm" id="btnRelCsv">
+                <span>Baixar Planilha CSV</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- CARD 3: RESUMO EXECUTIVO PARA WHATSAPP -->
+        <div class="report-action-card">
+          <div class="report-icon-box icon-wpp">💬</div>
+          <div class="report-details">
+            <h5>Resumo para WhatsApp / Mensagens</h5>
+            <p>Texto pronto formatado para envio a juízes, diretores de secretaria e equipes.</p>
+            <div class="report-buttons">
+              <button type="button" class="btn btn-outline btn-sm" id="btnRelCopiarWpp">
+                <span>Copiar Resumo Textual</span>
+              </button>
+              <button type="button" class="btn btn-outline btn-sm" id="btnRelEnviarWpp">
+                <span>Enviar pelo WhatsApp ➔</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ÁREA DE PREVIEW / IMPRESSÃO DO RELATÓRIO -->
+        <div id="areaPreviewRelatorio" class="report-preview-box" style="display: none;">
+          <div class="preview-header">
+            <h4>Visualização do Relatório</h4>
+            <div class="preview-actions">
+              <button type="button" class="btn btn-sm btn-primary" id="btnImprimirPreviewRelatorio">🖨️ Imprimir</button>
+              <button type="button" class="btn btn-sm btn-outline" id="btnFecharPreviewRelatorio">✕ Fechar</button>
+            </div>
+          </div>
+          <div id="conteudoRelatorioImpressao" class="printable-area">
+            <!-- Conteúdo formatado injetado aqui -->
+          </div>
+        </div>
+
+      </section>
+
+    </main>
+
+  </div>
+
+  <script src="./whatsapp-parser.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
