@@ -9,11 +9,10 @@
   <meta name="theme-color" content="#0284C7">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="manifest" href="./manifest.json">
-  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
-  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="./icon-192.png">
 
-  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
@@ -32,7 +31,7 @@
       <div class="card login-card">
         <div class="card-header">
           <h3>Acesso Autorizado</h3>
-          <p class="text-muted">Acesso restrito à sua Subseção cadastrada na extensão</p>
+          <p class="text-muted">Acesso controlado por CPF, Vara Federal e Subseção</p>
         </div>
 
         <form id="formLogin">
@@ -64,8 +63,8 @@
           </div>
 
           <div class="form-group">
-            <label for="loginCpf">CPF do Servidor ou Nome de Usuário</label>
-            <input type="text" id="loginCpf" class="form-control" placeholder="000.000.000-00 ou seu nome" required autocomplete="username">
+            <label for="loginCpf">CPF do Servidor / Gestor</label>
+            <input type="text" id="loginCpf" class="form-control" placeholder="000.000.000-00" required autocomplete="username">
           </div>
 
           <div class="form-group">
@@ -89,8 +88,8 @@
               <input type="password" id="loginChaveNuvem" class="form-control" placeholder="Chave AES da Vara (se aplicável)">
             </div>
             <label class="wpp-checkbox-inline">
-              <input type="checkbox" id="chkLembrarChaveMobile" checked>
-              <span>Manter chave AES salva neste aparelho (para envio rápido)</span>
+              <input type="checkbox" id="chkLembrarChaveMobile">
+              <span>Manter chave AES salva neste aparelho (padrão: somente nesta sessão)</span>
             </label>
           </div>
 
@@ -104,8 +103,9 @@
       </div>
 
       <div class="login-footer">
-        <p>🔒 Governança e Acesso Restrito por Subseção</p>
+        <p>🔒 Governança e Acesso Restrito por Vara &amp; Subseção</p>
         <p class="text-xs">Compatível com a versão 2.3+ da Extensão Maestro PJe</p>
+        <p class="text-xs"><a href="politica-privacidade.html" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline;">Política de Privacidade e LGPD</a></p>
       </div>
     </div>
   </div>
@@ -121,7 +121,8 @@
         <div class="app-badge">MAESTRO PJE</div>
         <div class="user-subsecao-badge" id="headerSubsecaoBadge">
           <span class="sub-dot"></span>
-          <span id="lblNomeSubsecao">Sobral</span>
+          <span id="lblNomeSubsecao">Subseção</span>
+          <select id="selectHeaderSubsecao" class="header-subsecao-select" style="display: none;" aria-label="Selecionar Subseção"></select>
         </div>
       </div>
       <div class="header-right">
@@ -136,7 +137,7 @@
         <span class="user-avatar">👤</span>
         <div class="user-details">
           <span class="user-name" id="lblUsuarioNome">Servidor Autorizado</span>
-          <span class="user-scope" id="lblEscopoRestricao">🔒 Acesso restrito à Subseção de Sobral</span>
+          <span class="user-scope" id="lblEscopoRestricao">🔒 Acesso restrito à Subseção configurada</span>
         </div>
       </div>
       <span class="badge-role" id="lblPerfilRole">Editor</span>
@@ -146,11 +147,15 @@
     <nav class="main-tabs">
       <button type="button" class="tab-btn active" data-tab="tabDashboard">
         <span class="tab-icon">📊</span>
-        <span>Visão Geral</span>
+        <span>Resumo</span>
+      </button>
+      <button type="button" class="tab-btn" data-tab="tabPorDia">
+        <span class="tab-icon">📅</span>
+        <span>Por Dia</span>
       </button>
       <button type="button" class="tab-btn" data-tab="tabPautas">
         <span class="tab-icon">🗓️</span>
-        <span>Pautas</span>
+        <span>Lista</span>
       </button>
       <button type="button" class="tab-btn" data-tab="tabWhatsapp">
         <span class="tab-icon">📲</span>
@@ -158,7 +163,7 @@
       </button>
       <button type="button" class="tab-btn" data-tab="tabRelatorios">
         <span class="tab-icon">📄</span>
-        <span>Relatórios</span>
+        <span>Relat.</span>
       </button>
     </nav>
 
@@ -252,6 +257,9 @@
 
         <!-- ATALHOS RÁPIDOS -->
         <div class="quick-actions">
+          <button type="button" class="btn btn-secondary quick-action-full" id="btnQuickPorDia">
+            <span>📅 Ver Pauta &amp; Escala por Dia</span>
+          </button>
           <button type="button" class="btn btn-primary quick-action-full" id="btnQuickWhatsapp">
             <span>📲 Colar Pauta(s) do WhatsApp → Planilha</span>
           </button>
@@ -261,6 +269,114 @@
           <button type="button" class="btn btn-outline" id="btnQuickVerPautas">
             <span>🔍 Ver Lista Completa</span>
           </button>
+        </div>
+
+      </section>
+
+      <!-- ====================================================== -->
+      <!-- ABA 1B: VISUALIZAÇÃO DIÁRIA (PAUTA PJE & ESCALA)       -->
+      <!-- ====================================================== -->
+      <section id="tabPorDia" class="tab-content">
+
+        <!-- BARRA DE NAVEGAÇÃO DE DATA -->
+        <div class="dia-nav-card">
+          <div class="dia-nav-top">
+            <button type="button" class="btn-circle" id="btnDiaAnterior" title="Dia anterior" aria-label="Dia anterior">◀</button>
+            <div class="dia-nav-center">
+              <div class="dia-nav-weekday" id="lblDiaSelecionadoTitulo">Hoje</div>
+              <div class="dia-nav-date-row">
+                <span class="dia-nav-date-text" id="lblDiaSelecionadoSubtitulo">--/--/----</span>
+                <input type="date" id="inputDataPorDia" class="dia-date-input" aria-label="Escolher data">
+              </div>
+            </div>
+            <button type="button" class="btn-circle" id="btnDiaProximo" title="Próximo dia" aria-label="Próximo dia">▶</button>
+          </div>
+          <div class="dia-quick-row">
+            <button type="button" class="btn btn-outline btn-sm" id="btnDiaHoje">📍 Hoje</button>
+            <button type="button" class="btn btn-outline btn-sm" id="btnDiaProximoComPauta">⏭️ Próx. c/ Pauta</button>
+            <button type="button" class="btn btn-outline btn-sm" id="btnToggleCalendarioDia">🗓️ Ocultar Cal.</button>
+          </div>
+        </div>
+
+        <!-- MINI CALENDÁRIO MENSAL COM MARCADORES DE ATIVIDADE -->
+        <div id="boxCalendarioPorDia" class="dia-cal-card">
+          <div class="dia-cal-header">
+            <button type="button" class="btn-circle btn-circle-sm" id="btnCalDiaMesAnt" aria-label="Mês anterior">◀</button>
+            <strong id="lblCalDiaMesAno">Novembro 2026</strong>
+            <button type="button" class="btn-circle btn-circle-sm" id="btnCalDiaMesProx" aria-label="Próximo mês">▶</button>
+          </div>
+          <div class="dia-cal-weekdays">
+            <span>D</span><span>S</span><span>T</span><span>Q</span><span>Q</span><span>S</span><span>S</span>
+          </div>
+          <div class="dia-cal-grid" id="gridCalendarioPorDia">
+            <!-- Renderizado via JavaScript -->
+          </div>
+          <div class="dia-cal-legend">
+            <span><i class="dia-dot dia-dot-escala"></i> Escala de Peritos</span>
+            <span><i class="dia-dot dia-dot-pauta"></i> Pauta PJe (Periciandos)</span>
+          </div>
+        </div>
+
+        <!-- RESUMO RÁPIDO DO DIA -->
+        <div class="dia-kpi-strip">
+          <div class="dia-kpi-chip">
+            <span class="dia-kpi-label">Escala / Vagas</span>
+            <strong class="dia-kpi-val" id="diaKpiEscala">0 • 0v</strong>
+          </div>
+          <div class="dia-kpi-chip">
+            <span class="dia-kpi-label">Pauta PJe</span>
+            <strong class="dia-kpi-val" id="diaKpiPautaPje">0 per.</strong>
+          </div>
+          <div class="dia-kpi-chip">
+            <span class="dia-kpi-label">Presença / Cham.</span>
+            <strong class="dia-kpi-val" id="diaKpiPresentes">0 / 0</strong>
+          </div>
+          <div class="dia-kpi-chip">
+            <span class="dia-kpi-label">Locais</span>
+            <strong class="dia-kpi-val" id="diaKpiLocais">-</strong>
+          </div>
+        </div>
+
+        <!-- MODO DE EXIBIÇÃO & FILTROS DO DIA -->
+        <div class="filters-card">
+          <div class="filter-pills dia-view-pills">
+            <button type="button" class="pill active" data-modo-dia="tudo">🔀 Tudo</button>
+            <button type="button" class="pill" data-modo-dia="escala">🗓️ Escala (<span id="diaCountEscalaPill">0</span>)</button>
+            <button type="button" class="pill pill-green" data-modo-dia="pauta">📋 Pauta PJe (<span id="diaCountPautaPill">0</span>)</button>
+          </div>
+
+          <div class="dia-filter-inputs">
+            <div class="search-box" style="margin-bottom: 0;">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="filtroTextoPorDia" placeholder="Perito, periciando, processo, sala...">
+              <button type="button" class="btn-clear" id="btnLimparBuscaPorDia" style="display:none;">✕</button>
+            </div>
+            <select id="filtroVaraPorDia" class="form-select-sm" aria-label="Filtrar por Vara no dia">
+              <option value="">Todas as Varas</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- BLOCO 1: ESCALA DE PERITOS NO DIA -->
+        <div id="secaoEscalaDoDia" class="dia-section-block">
+          <div class="dia-section-title-row">
+            <h4>🗓️ Escala de Peritos no Dia</h4>
+            <span class="badge-subsecao-lock" id="lblCountEscalaDia">0 bloco(s)</span>
+          </div>
+          <div class="pautas-list" id="listaEscalaDoDia">
+            <!-- Renderizado via JavaScript -->
+          </div>
+        </div>
+
+        <!-- BLOCO 2: PAUTA DE PERÍCIAS DO PJE NO DIA -->
+        <div id="secaoPautaPjeDoDia" class="dia-section-block">
+          <div class="dia-section-title-row">
+            <h4>📋 Pauta de Perícias (PJe)</h4>
+            <span class="badge-subsecao-lock" id="lblCountPautaPjeDia">0 perícia(s)</span>
+          </div>
+          <div class="dia-pauta-groups" id="listaPautaPjeDoDia">
+            <!-- Renderizado via JavaScript -->
+          </div>
         </div>
 
       </section>
@@ -301,7 +417,7 @@
         <!-- CONTADOR DE RESULTADOS -->
         <div class="results-info">
           <span id="lblQtdPautasFiltradas">Exibindo 0 pautas</span>
-          <span class="text-muted" id="lblSubsecaoEscopoFiltro">Subseção: Sobral</span>
+          <span class="text-muted" id="lblSubsecaoEscopoFiltro">Subseção ativa</span>
         </div>
 
         <!-- LISTA DE CARDS DE PAUTAS -->
@@ -352,6 +468,23 @@
             class="form-control wpp-textarea"
             rows="6"
             placeholder="Cole aqui 1 ou várias mensagens de pauta copiadas do WhatsApp...&#10;&#10;Ex: [24/11 09:40] Dra. Bárbara: Posso atender dias 07/12 e 14/12 às 08h30 (15 vagas), 19ª Vara, na Justiça Federal."></textarea>
+
+          <div class="wpp-defaults-grid" style="margin-bottom: 8px;">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label for="inpPeritoPadraoWpp">Perito(a) Padrão (se chat sem nome)</label>
+              <input type="text" id="inpPeritoPadraoWpp" class="form-control" list="datalistPeritosMobile" placeholder="Opcional: selecione o perito" style="padding: 6px 8px; font-size: 12px;">
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label for="selModoTurnosWpp">Turnos por Dia (padrão)</label>
+              <select id="selModoTurnosWpp" class="form-select-sm">
+                <option value="padrao_perito" selected>⚡ Padrão do Perito</option>
+                <option value="manha_tarde">☀️🌙 Manhã + Tarde</option>
+                <option value="manha">☀️ Somente Manhã</option>
+                <option value="tarde">🌙 Somente Tarde</option>
+              </select>
+            </div>
+          </div>
+          <div id="wppMobilePadraoPeritoInfo" class="wpp-alerts-box" style="display: none; margin-bottom: 10px;"></div>
 
           <div class="wpp-defaults-grid">
             <div class="form-group" style="margin-bottom: 0;">
@@ -411,7 +544,7 @@
         <div class="section-card">
           <div class="section-header">
             <h4>📑 Centro de Relatórios</h4>
-            <span class="badge-subsecao-lock" id="lblRelatorioSubsecao">Sobral</span>
+            <span class="badge-subsecao-lock" id="lblRelatorioSubsecao">Subseção</span>
           </div>
           <p class="text-sm text-muted">
             Gere relatórios oficiais das pautas, perícias marcadas e pendentes restritos à sua subseção.
@@ -486,7 +619,7 @@
 
   </div>
 
-  <script src="./whatsapp-parser.js"></script>
-  <script src="./app.js"></script>
+  <script src="whatsapp-parser.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

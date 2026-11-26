@@ -1,75 +1,95 @@
 /**
- * Maestro PJe Mobile - Service Worker para suporte Offline no Android
+ * Maestro PJe Mobile - Service Worker para suporte Offline no Android (v4)
+ * Política:
+ *  - Apenas requisições GET são interceptadas; mutações seguem direto para a rede.
+ *  - Firestore API: estritamente Network-Only (nunca cacheado para evitar dados obsoletos).
+ *  - Navegação / Share Target: Network-First com fallback para ./index.html.
+ *  - Assets estáticos locais: Stale-While-Revalidate mantendo atualização automática silenciosa.
  */
-const CACHE_NAME = 'maestro-pje-mobile-v4';
+const CACHE_NAME = 'maestro-pje-mobile-v8';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
   './styles.css',
   './whatsapp-parser.js',
   './app.js',
-  './manifest.json',
-  './icon-192.png',
-  './icon-512.png',
-  './icon.svg'
+  './manifest.json'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS_TO_CACHE);
-    }).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(ASSETS_TO_CACHE))
+      .then(() => self.skipWaiting())
   );
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
+    caches.keys()
+      .then((keys) => Promise.all(
         keys.map((key) => {
           if (key !== CACHE_NAME) {
             return caches.delete(key);
           }
+          return null;
         })
-      );
-    }).then(() => self.clients.claim())
+      ))
+      .then(() => self.clients.claim())
   );
 });
 
 self.addEventListener('fetch', (event) => {
-  if (event.request.url.includes('firestore.googleapis.com')) {
-    if (event.request.method !== 'GET') {
-      event.respondWith(fetch(event.request));
-      return;
-    }
+  const req = event.request;
+
+  // Mutações (POST, PATCH, DELETE, etc.) seguem direto para a rede sem cache
+  if (!req || req.method !== 'GET') {
+    return;
+  }
+
+  let reqUrl;
+  try {
+    reqUrl = new URL(req.url);
+  } catch (e) {
+    return;
+  }
+
+  // Firestore API: estritamente Network-Only (sem cache de respostas da nuvem)
+  if (reqUrl.hostname.includes('firestore.googleapis.com')) {
+    event.respondWith(fetch(req));
+    return;
+  }
+
+  // Navegação e retorno do Share Target do Android (?shared_text=...)
+  if (req.mode === 'navigate' || req.url.includes('shared_text=')) {
     event.respondWith(
-      fetch(event.request).catch(() => caches.match(event.request))
+      fetch(req).catch(() => caches.match('./index.html'))
     );
     return;
   }
 
-  if (event.request.mode === 'navigate' || event.request.url.includes('shared_text=')) {
+  // Assets estáticos da mesma origem: Stale-While-Revalidate
+  if (reqUrl.origin === self.location.origin) {
     event.respondWith(
-      fetch(event.request).catch(() => caches.match('./index.html'))
-    );
-    return;
-  }
+      caches.open(CACHE_NAME).then((cache) =>
+        cache.match(req).then((cachedResponse) => {
+          const networkPromise = fetch(req)
+            .then((networkResponse) => {
+              if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+                cache.put(req, networkResponse.clone());
+              }
+              return networkResponse;
+            })
+            .catch(() => null);
 
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(event.request).then((networkResponse) => {
-        if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
-          return networkResponse;
-        }
-        const responseToCache = networkResponse.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseToCache);
-        });
-        return networkResponse;
-      });
-    })
-  );
+          if (cachedResponse) {
+            event.waitUntil(networkPromise);
+            return cachedResponse;
+          }
+
+          return networkPromise.then((res) => res || Response.error());
+        })
+      )
+    );
+  }
 });

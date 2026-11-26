@@ -339,9 +339,18 @@
   // =========================================================================
   // 2. ESTADO GLOBAL DA APLICAÇÃO
   // =========================================================================
+  function obterHojeIsoLocal() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
   const agoraInicial = new Date();
   let sessaoUsuario = null; // { subsecaoId, subsecaoNome, usuarioCpf, role, projectId }
   let todasPautas = [];
+  let todasPericiasPje = [];
   let pautasFiltradas = [];
   let bancoPeritosMobile = [];
   let pautasParaImportar = [];
@@ -350,6 +359,13 @@
   let mesAtivo = agoraInicial.getMonth();
   let filtroSituacaoAtivo = "todos";
   let textoCompartilhadoPendente = null;
+
+  let dataSelecionadaPorDia = obterHojeIsoLocal();
+  let calDiaAno = agoraInicial.getFullYear();
+  let calDiaMes = agoraInicial.getMonth();
+  let modoVisualizacaoDia = "tudo"; // "tudo" | "escala" | "pauta"
+  let calendarioDiaVisivel = true;
+  let ultimaSyncPautaPjeTs = 0;
 
   function ehAmbienteExtensaoChrome() {
     return typeof chrome !== "undefined" && Boolean(chrome.storage && chrome.storage.local);
@@ -379,6 +395,86 @@
     }
   }
 
+  function normalizarNumeroVara(v) {
+    const raw = String(v ?? "").trim();
+    if (!raw) return "";
+    if (raw === "*") return "*";
+    const digits = raw.replace(/\D/g, "");
+    return digits || raw;
+  }
+
+  function mascararCpfMobile(cpf) {
+    const limpo = String(cpf || "").replace(/\D/g, "");
+    if (limpo.length === 11) {
+      return `${limpo.slice(0, 3)}.***.***-${limpo.slice(-2)}`;
+    }
+    return String(cpf || "");
+  }
+
+  function podeEnviarPautasNaSessao(sessao = sessaoUsuario) {
+    if (!sessao) return false;
+    return sessao.role === "Master" || sessao.role === "Editor";
+  }
+
+  function obterSubsecoesAutorizadasSessao(sessao = sessaoUsuario) {
+    const todasKeys = Object.keys(SUBSECOES_MAP);
+    if (!sessao) return [];
+    if (sessao.role === "Master") return todasKeys;
+    const subs = Array.isArray(sessao.subsecoesPermitidas) ? sessao.subsecoesPermitidas : [];
+    if (subs.includes("*")) return todasKeys;
+    const validas = subs.filter((id) => Boolean(SUBSECOES_MAP[id]));
+    if (validas.length > 0) return validas;
+    return sessao.subsecaoId ? [sessao.subsecaoId] : [];
+  }
+
+  function resolverVarasAutorizadasSubsecao(sessao = sessaoUsuario, subIdParam = null) {
+    const subId = subIdParam || sessao?.subsecaoId || "sobral";
+    const varasBaseSub = Array.isArray(SUBSECOES_MAP[subId]?.varas)
+      ? SUBSECOES_MAP[subId].varas.map(normalizarNumeroVara).filter(Boolean)
+      : ["18", "19", "31"];
+
+    if (!sessao || sessao.role === "Master") return varasBaseSub;
+    const subsPerm = Array.isArray(sessao.subsecoesPermitidas) ? sessao.subsecoesPermitidas : [];
+    if (subsPerm.includes("*")) return varasBaseSub;
+
+    const varasObj = (sessao.varasPermitidas && typeof sessao.varasPermitidas === "object")
+      ? sessao.varasPermitidas
+      : {};
+    const subKey = Object.keys(varasObj).find((k) => String(k).trim().toLowerCase() === String(subId).trim().toLowerCase());
+    const listaCfg = subKey ? varasObj[subKey] : null;
+
+    if (Array.isArray(listaCfg) && listaCfg.length > 0 && !listaCfg.includes("*")) {
+      const filtradas = Array.from(new Set(listaCfg.map(normalizarNumeroVara).filter(Boolean)));
+      if (filtradas.length > 0) return filtradas;
+    }
+
+    if (sessao.varaFixa) {
+      const vFixa = normalizarNumeroVara(sessao.varaFixa);
+      if (vFixa && varasBaseSub.includes(vFixa)) {
+        return [vFixa];
+      }
+    }
+
+    return varasBaseSub;
+  }
+
+  function isVaraAutorizadaNaSessao(varaValor, sessao = sessaoUsuario, subIdParam = null) {
+    const varasAuth = resolverVarasAutorizadasSubsecao(sessao, subIdParam);
+    const vNorm = normalizarNumeroVara(varaValor);
+    if (!vNorm) return false;
+    return varasAuth.includes(vNorm);
+  }
+
+  function obterLabelEscopoVaras(sessao = sessaoUsuario, subIdParam = null) {
+    const subId = subIdParam || sessao?.subsecaoId || "sobral";
+    const varasAuth = resolverVarasAutorizadasSubsecao(sessao, subId);
+    const varasSub = SUBSECOES_MAP[subId]?.varas || [];
+    if (!sessao || sessao.role === "Master" || varasAuth.length >= varasSub.length) {
+      return varasAuth.length > 0 ? varasAuth.map((v) => `${v}ª`).join(", ") : "Todas as Varas";
+    }
+    return varasAuth.map((v) => `${v}ª VF`).join(", ");
+  }
+
   // =========================================================================
   // 3. INICIALIZAÇÃO, EVENTOS (CSP-SAFE) E GERENCIAMENTO DE SESSÃO
   // =========================================================================
@@ -395,6 +491,16 @@
       window.fazerLogin();
     });
 
+    document.getElementById("loginCpf")?.addEventListener("input", (e) => {
+      const raw = e.target.value;
+      if (/[a-zA-Z]/.test(raw)) return;
+      let v = raw.replace(/\D/g, "").slice(0, 11);
+      if (v.length > 9) v = v.replace(/(\d{3})(\d{3})(\d{3})(\d{1,2})/, "$1.$2.$3-$4");
+      else if (v.length > 6) v = v.replace(/(\d{3})(\d{3})(\d{1,3})/, "$1.$2.$3");
+      else if (v.length > 3) v = v.replace(/(\d{3})(\d{1,3})/, "$1.$2");
+      e.target.value = v;
+    });
+
     document.getElementById("btnAplicarCodigoMobile")?.addEventListener("click", aplicarCodigoConexaoMobile);
 
     const toggleAdvEl = document.getElementById("btnToggleConfigAvancada");
@@ -409,6 +515,9 @@
     }
 
     // Header
+    document.getElementById("selectHeaderSubsecao")?.addEventListener("change", (e) => {
+      trocarSubsecaoMobile(e.target.value);
+    });
     document.getElementById("btnHeaderSyncPautas")?.addEventListener("click", () => window.sincronizarPautas());
     document.getElementById("btnHeaderLogout")?.addEventListener("click", () => window.fazerLogout());
 
@@ -423,14 +532,86 @@
     // Visão Geral
     document.getElementById("btnMesAnterior")?.addEventListener("click", () => window.alterarMes(-1));
     document.getElementById("btnMesProximo")?.addEventListener("click", () => window.alterarMes(1));
+    document.getElementById("btnQuickPorDia")?.addEventListener("click", () => window.trocarAba("tabPorDia"));
     document.getElementById("btnQuickWhatsapp")?.addEventListener("click", () => window.trocarAba("tabWhatsapp"));
     document.getElementById("btnQuickRelatorio")?.addEventListener("click", () => window.abrirRelatorioRapido());
     document.getElementById("btnQuickVerPautas")?.addEventListener("click", () => window.trocarAba("tabPautas"));
 
+    // Por Dia (navegação, mini calendário, filtros e ações delegadas)
+    document.getElementById("btnDiaAnterior")?.addEventListener("click", () => alterarDiaPorDia(-1));
+    document.getElementById("btnDiaProximo")?.addEventListener("click", () => alterarDiaPorDia(1));
+    document.getElementById("inputDataPorDia")?.addEventListener("change", (e) => {
+      if (e.target && e.target.value) selecionarDataPorDia(e.target.value);
+    });
+    document.getElementById("btnDiaHoje")?.addEventListener("click", () => selecionarDataPorDia(obterHojeIsoLocal()));
+    document.getElementById("btnDiaProximoComPauta")?.addEventListener("click", irParaProximoDiaComAtividade);
+    document.getElementById("btnToggleCalendarioDia")?.addEventListener("click", alternarCalendarioPorDia);
+    document.getElementById("btnCalDiaMesAnt")?.addEventListener("click", () => alterarMesCalendarioDia(-1));
+    document.getElementById("btnCalDiaMesProx")?.addEventListener("click", () => alterarMesCalendarioDia(1));
+
+    document.getElementById("gridCalendarioPorDia")?.addEventListener("click", (e) => {
+      const cell = e.target.closest("[data-date]");
+      if (!cell) return;
+      const dt = cell.getAttribute("data-date");
+      if (dt) selecionarDataPorDia(dt);
+    });
+
+    document.querySelectorAll(".dia-view-pills .pill").forEach((pill) => {
+      pill.addEventListener("click", () => {
+        const modo = pill.getAttribute("data-modo-dia") || "tudo";
+        modoVisualizacaoDia = modo;
+        document.querySelectorAll(".dia-view-pills .pill").forEach((p) => p.classList.remove("active"));
+        pill.classList.add("active");
+        renderizarAbaPorDia();
+      });
+    });
+
+    document.getElementById("filtroTextoPorDia")?.addEventListener("input", () => renderizarAbaPorDia());
+    document.getElementById("btnLimparBuscaPorDia")?.addEventListener("click", () => {
+      const inp = document.getElementById("filtroTextoPorDia");
+      if (inp) inp.value = "";
+      renderizarAbaPorDia();
+    });
+    document.getElementById("filtroVaraPorDia")?.addEventListener("change", () => renderizarAbaPorDia());
+
+    document.getElementById("listaPautaPjeDoDia")?.addEventListener("click", (e) => {
+      const btnProx = e.target.closest("[data-action='proximo-dia-atividade']");
+      if (btnProx) {
+        irParaProximoDiaComAtividade();
+        return;
+      }
+      const btnCopy = e.target.closest("[data-copy-proc]");
+      if (!btnCopy) return;
+      const proc = btnCopy.getAttribute("data-copy-proc") || "";
+      if (!proc) return;
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        navigator.clipboard.writeText(proc).then(() => {
+          const orig = btnCopy.textContent;
+          btnCopy.textContent = "✓ Copiado";
+          setTimeout(() => { btnCopy.textContent = orig; }, 1400);
+        }).catch(() => {});
+      }
+    });
+
+    document.getElementById("listaEscalaDoDia")?.addEventListener("click", (e) => {
+      const btnProx = e.target.closest("[data-action='proximo-dia-atividade']");
+      if (btnProx) irParaProximoDiaComAtividade();
+    });
+
+    document.getElementById("listaPautasCards")?.addEventListener("click", (e) => {
+      const badgeData = e.target.closest("[data-abrir-dia]");
+      if (!badgeData) return;
+      const dt = badgeData.getAttribute("data-abrir-dia");
+      if (dt && /^\d{4}-\d{2}-\d{2}$/.test(dt)) {
+        selecionarDataPorDia(dt);
+        window.trocarAba("tabPorDia");
+      }
+    });
+
     // Pautas (filtros)
     document.getElementById("filtroTexto")?.addEventListener("input", () => window.filtrarPautas());
     document.getElementById("btnLimparBusca")?.addEventListener("click", () => window.limparBusca());
-    document.querySelectorAll(".filter-pills .pill").forEach((pill) => {
+    document.querySelectorAll("#tabPautas .filter-pills .pill").forEach((pill) => {
       pill.addEventListener("click", () => {
         const filtro = pill.getAttribute("data-filtro") || "todos";
         window.setFiltroSituacao(filtro, pill);
@@ -448,6 +629,17 @@
     document.getElementById("btnSelecionarTodasImportWpp")?.addEventListener("click", alternarSelecaoTodasImportWpp);
     document.getElementById("btnEnviarPautasNuvemWpp")?.addEventListener("click", enviarPautasImportadasParaPlanilha);
     document.getElementById("btnReenviarFilaOffline")?.addEventListener("click", reenviarFilaOffline);
+
+    const onConfigPadraoWppMobile = () => {
+      atualizarResumoPadraoPeritoMobile();
+      const txtEl = document.getElementById("txtConversaWhatsApp");
+      if (txtEl && txtEl.value && txtEl.value.trim()) {
+        interpretarTextoWhatsApp();
+      }
+    };
+    document.getElementById("inpPeritoPadraoWpp")?.addEventListener("change", onConfigPadraoWppMobile);
+    document.getElementById("inpPeritoPadraoWpp")?.addEventListener("input", atualizarResumoPadraoPeritoMobile);
+    document.getElementById("selModoTurnosWpp")?.addEventListener("change", onConfigPadraoWppMobile);
 
     // Edição inline e delegação de eventos nos cards de importação WhatsApp
     const listaCardsWpp = document.getElementById("listaCardsImportWpp");
@@ -480,9 +672,17 @@
       const combined = [title, txt].map((s) => String(s || "").trim()).filter(Boolean).join("\n");
       if (combined) {
         textoCompartilhadoPendente = combined;
+        try { sessionStorage.setItem("maestro_mobile_shared_pending", combined); } catch (e) {}
         try {
           const cleanUrl = window.location.pathname + window.location.hash;
           window.history.replaceState({}, document.title, cleanUrl);
+        } catch (e) {}
+      } else if (!textoCompartilhadoPendente) {
+        try {
+          const savedShared = sessionStorage.getItem("maestro_mobile_shared_pending");
+          if (savedShared && savedShared.trim()) {
+            textoCompartilhadoPendente = savedShared;
+          }
         } catch (e) {}
       }
     } catch (e) {}
@@ -556,8 +756,14 @@
       const raw = localStorage.getItem("maestro_mobile_session");
       if (raw) {
         sessaoUsuario = JSON.parse(raw);
-        if (sessaoUsuario && sessaoUsuario.subsecaoId) {
+        const loginMs = sessaoUsuario?.dataLogin ? Date.parse(sessaoUsuario.dataLogin) : 0;
+        const expirada = loginMs > 0 && (Date.now() - loginMs) > (30 * 24 * 60 * 60 * 1000);
+        if (expirada) {
+          localStorage.removeItem("maestro_mobile_session");
+          sessaoUsuario = null;
+        } else if (sessaoUsuario && sessaoUsuario.subsecaoId) {
           iniciarAplicativoComSessao(obterChaveNuvemSessao());
+          revalidarSessaoNaNuvem();
           return;
         }
       }
@@ -565,6 +771,80 @@
       console.warn("Erro ao carregar sessão anterior:", e);
     }
     exibirTelaLogin();
+  }
+async function revalidarSessaoNaNuvem() {
+    if (!sessaoUsuario || !sessaoUsuario.projectId || sessaoUsuario.projectId.includes("exemplo")) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    try {
+      const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(sessaoUsuario.projectId)}/databases/(default)/documents/subsecoes/GOVERNANCA_PERMISSOES`;
+      const resp = await fetch(url, { method: "GET", cache: "no-cache" });
+      if (resp.status !== 200) return;
+      const json = await resp.json();
+      const f = json.fields || {};
+      const cpfLimpo = String(sessaoUsuario.usuarioCpf || "").replace(/\D/g, "");
+
+      const govDoc = {
+        exigirCpfMobile: Boolean(f.exigirCpfMobile && f.exigirCpfMobile.booleanValue === true),
+        cpfsBloqueadosJson: f.cpfsBloqueadosJson?.stringValue || "[]",
+        editoresJson: f.editoresJson?.stringValue || "[]",
+        mastersCpfsJson: f.mastersCpfsJson?.stringValue || "[]"
+      };
+
+      const bloqueados = JSON.parse(govDoc.cpfsBloqueadosJson || "[]").map((c) => String(c || "").replace(/\D/g, ""));
+      if (cpfLimpo.length === 11 && bloqueados.includes(cpfLimpo)) {
+        forcarLogoutRevogado("Este CPF foi bloqueado pela Governança Institucional.");
+        return;
+      }
+
+      if (sessaoUsuario.authPorSenhaMaster) {
+        return;
+      }
+
+      const escopoAtual = resolverPermissaoMobileDoc(govDoc, sessaoUsuario.usuarioCpf, sessaoUsuario.subsecaoId);
+      if (!escopoAtual.autorizado) {
+        forcarLogoutRevogado(escopoAtual.erro || "Sua permissão foi alterada, suspensa ou revogada pelo Administrador Master.");
+        return;
+      }
+
+      const subsAntes = JSON.stringify(sessaoUsuario.subsecoesPermitidas || []);
+      const varasAntes = JSON.stringify(sessaoUsuario.varasPermitidas || {});
+      const roleAntes = sessaoUsuario.role;
+      const nomeAntes = sessaoUsuario.usuarioNome || "";
+      const varaFixaAntes = sessaoUsuario.varaFixa || null;
+
+      sessaoUsuario.role = escopoAtual.role;
+      sessaoUsuario.usuarioNome = escopoAtual.nomeUsuario || sessaoUsuario.usuarioNome || "";
+      sessaoUsuario.subsecoesPermitidas = escopoAtual.subsecoesPermitidas;
+      sessaoUsuario.varasPermitidas = escopoAtual.varasPermitidas;
+      sessaoUsuario.varaFixa = escopoAtual.varaFixa || null;
+
+      const houveAlteracao = (
+        roleAntes !== sessaoUsuario.role ||
+        nomeAntes !== sessaoUsuario.usuarioNome ||
+        varaFixaAntes !== sessaoUsuario.varaFixa ||
+        subsAntes !== JSON.stringify(sessaoUsuario.subsecoesPermitidas || []) ||
+        varasAntes !== JSON.stringify(sessaoUsuario.varasPermitidas || {})
+      );
+
+      if (houveAlteracao) {
+        localStorage.setItem("maestro_mobile_session", JSON.stringify(sessaoUsuario));
+        aplicarEscopoSessaoNaUI();
+        window.sincronizarPautas(obterChaveNuvemSessao());
+      }
+    } catch (e) {}
+  }
+
+  function forcarLogoutRevogado(motivo) {
+    localStorage.removeItem("maestro_mobile_session");
+    localStorage.removeItem("maestro_mobile_key_saved");
+    try { sessionStorage.removeItem("maestro_mobile_key"); } catch (e) {}
+    sessaoUsuario = null;
+    todasPautas = [];
+    todasPericiasPje = [];
+    bancoPeritosMobile = [];
+    pautasParaImportar = [];
+    exibirTelaLogin();
+    alert("🔒 Sessão encerrada: " + motivo);
   }
 
   function exibirTelaLogin() {
@@ -594,7 +874,7 @@
     const txtPin = document.getElementById("loginPin").value.trim();
     let txtProj = document.getElementById("loginProjectId").value.trim();
     let txtChave = document.getElementById("loginChaveNuvem").value.trim();
-    const lembrarChave = document.getElementById("chkLembrarChaveMobile")?.checked !== false;
+    const lembrarChave = Boolean(document.getElementById("chkLembrarChaveMobile")?.checked);
     const msgBox = document.getElementById("loginMsg");
     const btnLogin = document.getElementById("btnLogin");
 
@@ -630,7 +910,12 @@
         if (!txtChave && st.chaveSegurancaNuvem) txtChave = st.chaveSegurancaNuvem;
       }
 
-      const projectIdEfetivo = txtProj || "maestro-pje-trf5";
+      if (!txtProj) {
+        exibirErroLogin("Informe o ID do Projeto Firebase em '⚙️ Parâmetros de Nuvem' ou cole o Código de Conexão gerado no Maestro Desktop.");
+        return;
+      }
+
+      const projectIdEfetivo = txtProj;
       const validacao = await validarPinGovernança(txtPin, txtCpf, selSub, projectIdEfetivo);
       if (!validacao.valido) {
         exibirErroLogin(validacao.erro || "PIN de ativação incorreto. Use o mesmo PIN configurado no Maestro PJe do seu computador.");
@@ -641,6 +926,7 @@
 
       const isMaster = validacao.role === "Master";
       const subInfo = SUBSECOES_MAP[selSub] || { id: selSub, nome: selSub, varas: [] };
+      const cpfLimpo = txtCpf.replace(/\D/g, "");
 
       if (txtChave) {
         salvarChaveNuvemSessao(txtChave, lembrarChave);
@@ -650,9 +936,15 @@
         subsecaoId: selSub,
         subsecaoNome: subInfo.nome,
         subsecaoDesc: subInfo.descricao,
-        usuarioCpf: txtCpf,
-        role: isMaster ? "Master" : "Editor",
-        subsecoesPermitidas: isMaster ? ["*"] : [selSub],
+        usuarioCpf: cpfLimpo.length === 11 ? cpfLimpo : txtCpf,
+        usuarioNome: validacao.nomeUsuario || "",
+        role: validacao.role || (isMaster ? "Master" : "Editor"),
+        authPorSenhaMaster: Boolean(validacao.authPorSenhaMaster),
+        subsecoesPermitidas: isMaster
+          ? ["*"]
+          : (Array.isArray(validacao.subsecoesPermitidas) && validacao.subsecoesPermitidas.length > 0 ? validacao.subsecoesPermitidas : [selSub]),
+        varasPermitidas: isMaster ? { "*": ["*"] } : (validacao.varasPermitidas || {}),
+        varaFixa: validacao.varaFixa || null,
         projectId: projectIdEfetivo,
         dataLogin: new Date().toISOString()
       };
@@ -704,6 +996,122 @@
     try { localStorage.removeItem("maestro_mobile_lockout"); } catch (e) {}
   }
 
+  function resolverPermissaoMobileDoc(govDoc, cpfUsuario, subId) {
+    const doc = (govDoc && typeof govDoc === "object") ? govDoc : {};
+    const cpfLimpo = String(cpfUsuario || "").replace(/\D/g, "");
+    const exigirCpf = Boolean(doc.exigirCpfMobile === true);
+
+    try {
+      const bloqueadosRaw = Array.isArray(doc.cpfsBloqueados)
+        ? doc.cpfsBloqueados
+        : JSON.parse(doc.cpfsBloqueadosJson || "[]");
+      const bloqueados = (Array.isArray(bloqueadosRaw) ? bloqueadosRaw : []).map((c) => String(c || "").replace(/\D/g, ""));
+      if (cpfLimpo.length === 11 && bloqueados.includes(cpfLimpo)) {
+        return { autorizado: false, erro: "Este CPF encontra-se bloqueado na governança institucional." };
+      }
+    } catch (e) {}
+
+    try {
+      const mastersRaw = Array.isArray(doc.mastersCpfs) ? doc.mastersCpfs : JSON.parse(doc.mastersCpfsJson || "[]");
+      const masters = (Array.isArray(mastersRaw) ? mastersRaw : []).map((c) => String(c || "").replace(/\D/g, ""));
+      if (cpfLimpo.length === 11 && masters.includes(cpfLimpo)) {
+        return {
+          autorizado: true,
+          role: "Master",
+          nomeUsuario: "",
+          subsecoesPermitidas: ["*"],
+          varasPermitidas: { "*": ["*"] },
+          varaFixa: null
+        };
+      }
+    } catch (e) {}
+
+    try {
+      const editoresRaw = Array.isArray(doc.editores) ? doc.editores : JSON.parse(doc.editoresJson || "[]");
+      const editores = Array.isArray(editoresRaw) ? editoresRaw : [];
+      const regsCpf = cpfLimpo.length === 11
+        ? editores.filter((ed) => ed && String(ed.cpf || "").replace(/\D/g, "") === cpfLimpo)
+        : [];
+
+      if (regsCpf.length > 0) {
+        const regsMobile = regsCpf.filter((ed) => ed.origem === "mobile" || String(ed.deviceId || "").startsWith("mob_"));
+        const pool = regsMobile.length > 0 ? regsMobile : regsCpf;
+        const ativos = pool.filter((ed) => ed.ativo !== false && ed.bloqueado !== true);
+        if (ativos.length === 0) {
+          return { autorizado: false, erro: "Seu usuário está bloqueado ou desativado pela Governança." };
+        }
+
+        const permitidosNaSub = ativos.filter((ed) => {
+          const subs = Array.isArray(ed.subsecoesPermitidas) ? ed.subsecoesPermitidas : [];
+          if (ed.papel === "master" || subs.includes("*")) return true;
+          if (subs.length === 0) {
+            if (ed.varaFixa && SUBSECOES_MAP[subId]?.varas) {
+              return SUBSECOES_MAP[subId].varas.map(normalizarNumeroVara).includes(normalizarNumeroVara(ed.varaFixa));
+            }
+            return true;
+          }
+          return subs.includes(subId);
+        });
+
+        if (permitidosNaSub.length === 0) {
+          const subsDesc = Array.from(new Set(ativos.flatMap((ed) => Array.isArray(ed.subsecoesPermitidas) ? ed.subsecoesPermitidas : [])));
+          const nomesSubs = subsDesc.map((id) => SUBSECOES_MAP[id]?.nome || id).join(", ");
+          return {
+            autorizado: false,
+            erro: nomesSubs
+              ? `Seu CPF não possui acesso à subseção "${SUBSECOES_MAP[subId]?.nome || subId}". Subseção(ões) liberada(s): ${nomesSubs}.`
+              : `Seu CPF não possui permissão de acesso para a subseção "${subId}".`
+          };
+        }
+
+        const escolhido = permitidosNaSub.find((ed) => ed.papel === "master")
+          || permitidosNaSub.find((ed) => ed.papel === "editor" || !ed.papel)
+          || permitidosNaSub[0];
+
+        const papelOrig = String(escolhido.papel || "editor").trim().toLowerCase();
+        let roleMapeado = "Editor";
+        if (papelOrig === "master") roleMapeado = "Master";
+        else if (papelOrig === "leitor") roleMapeado = "Leitor";
+        else if (papelOrig === "observador") roleMapeado = "Observador";
+
+        const subsPerm = roleMapeado === "Master"
+          ? ["*"]
+          : (Array.isArray(escolhido.subsecoesPermitidas) && escolhido.subsecoesPermitidas.length > 0
+              ? escolhido.subsecoesPermitidas
+              : [subId]);
+
+        const varasPerm = roleMapeado === "Master"
+          ? { "*": ["*"] }
+          : ((escolhido.varasPermitidas && typeof escolhido.varasPermitidas === "object") ? escolhido.varasPermitidas : {});
+
+        return {
+          autorizado: true,
+          role: roleMapeado,
+          nomeUsuario: String(escolhido.nomeUsuario || "").trim(),
+          subsecoesPermitidas: subsPerm,
+          varasPermitidas: varasPerm,
+          varaFixa: escolhido.varaFixa ? normalizarNumeroVara(escolhido.varaFixa) : null
+        };
+      }
+    } catch (e) {}
+
+    if (exigirCpf) {
+      return {
+        autorizado: false,
+        erro: "Acesso restrito: este CPF não está cadastrado na governança. Solicite ao Administrador Master o cadastro na aba Controle de Acessos."
+      };
+    }
+
+    return {
+      autorizado: true,
+      role: "Editor",
+      nomeUsuario: "",
+      subsecoesPermitidas: [subId],
+      varasPermitidas: {},
+      varaFixa: null
+    };
+  }
+
   async function validarPinGovernança(pin, cpfUsuario, subId, projectId) {
     if (!pin || !String(pin).trim()) {
       return { valido: false, erro: "Informe o PIN de ativação." };
@@ -721,7 +1129,7 @@
       ];
       for (const url of urls) {
         try {
-          const resp = await fetch(url, { method: "GET" });
+          const resp = await fetch(url, { method: "GET", cache: "no-cache" });
           if (resp.status === 200) {
             const json = await resp.json();
             const f = json.fields || {};
@@ -732,7 +1140,10 @@
               masterHash: f.masterHash?.stringValue || "",
               masterSalt: f.masterSalt?.stringValue || "",
               senhaMaster: f.senhaMaster?.stringValue || "",
-              cpfsBloqueadosJson: f.cpfsBloqueadosJson?.stringValue || "[]"
+              exigirCpfMobile: Boolean(f.exigirCpfMobile && f.exigirCpfMobile.booleanValue === true),
+              cpfsBloqueadosJson: f.cpfsBloqueadosJson?.stringValue || "[]",
+              editoresJson: f.editoresJson?.stringValue || "[]",
+              mastersCpfsJson: f.mastersCpfsJson?.stringValue || "[]"
             };
             try {
               localStorage.setItem(cacheKey, JSON.stringify({
@@ -740,7 +1151,10 @@
                 pinSalt: govDoc.pinSalt,
                 masterHash: govDoc.masterHash,
                 masterSalt: govDoc.masterSalt,
-                cpfsBloqueadosJson: govDoc.cpfsBloqueadosJson
+                exigirCpfMobile: govDoc.exigirCpfMobile,
+                cpfsBloqueadosJson: govDoc.cpfsBloqueadosJson,
+                editoresJson: govDoc.editoresJson,
+                mastersCpfsJson: govDoc.mastersCpfsJson
               }));
             } catch (e) {}
             break;
@@ -766,33 +1180,72 @@
     }
 
     if (govDoc) {
+      // 1. Bloqueio absoluto por CPF
       try {
-        const bloqueados = Array.isArray(govDoc.cpfsBloqueados)
+        const bloqueadosRaw = Array.isArray(govDoc.cpfsBloqueados)
           ? govDoc.cpfsBloqueados
           : JSON.parse(govDoc.cpfsBloqueadosJson || "[]");
-        if (cpfLimpo.length === 11 && Array.isArray(bloqueados) && bloqueados.includes(cpfLimpo)) {
+        const bloqueados = (Array.isArray(bloqueadosRaw) ? bloqueadosRaw : []).map((c) => String(c || "").replace(/\D/g, ""));
+        if (cpfLimpo.length === 11 && bloqueados.includes(cpfLimpo)) {
           return { valido: false, erro: "Este CPF encontra-se bloqueado na governança institucional." };
         }
       } catch (e) {}
 
+      // 2. Autenticação direta via Senha Mestra de Administrador
       if (govDoc.masterHash && govDoc.masterSalt) {
         if (await verificarHashPBKDF2Mobile(clean, govDoc.masterHash, govDoc.masterSalt)) {
-          return { valido: true, role: "Master" };
+          return {
+            valido: true,
+            role: "Master",
+            authPorSenhaMaster: true,
+            nomeUsuario: "",
+            subsecoesPermitidas: ["*"],
+            varasPermitidas: { "*": ["*"] },
+            varaFixa: null
+          };
         }
       } else if (govDoc.senhaMaster && clean === govDoc.senhaMaster.trim()) {
-        return { valido: true, role: "Master" };
+        return {
+          valido: true,
+          role: "Master",
+          authPorSenhaMaster: true,
+          nomeUsuario: "",
+          subsecoesPermitidas: ["*"],
+          varasPermitidas: { "*": ["*"] },
+          varaFixa: null
+        };
       }
 
+      // 3. Validação do PIN de Ativação
+      let pinOk = false;
+      let temPinConfigurado = false;
       if (govDoc.pinHash && govDoc.pinSalt) {
-        if (await verificarHashPBKDF2Mobile(clean, govDoc.pinHash, govDoc.pinSalt)) {
-          return { valido: true, role: "Editor" };
-        }
-        return { valido: false, erro: registrarFalhaLoginMobile() };
+        temPinConfigurado = true;
+        pinOk = await verificarHashPBKDF2Mobile(clean, govDoc.pinHash, govDoc.pinSalt);
       } else if (govDoc.pinAtivacao) {
-        if (clean === govDoc.pinAtivacao.trim()) {
-          return { valido: true, role: "Editor" };
+        temPinConfigurado = true;
+        pinOk = (clean === govDoc.pinAtivacao.trim());
+      }
+
+      if (temPinConfigurado) {
+        if (!pinOk) {
+          return { valido: false, erro: registrarFalhaLoginMobile() };
         }
-        return { valido: false, erro: registrarFalhaLoginMobile() };
+
+        const escopo = resolverPermissaoMobileDoc(govDoc, cpfUsuario, subId);
+        if (!escopo.autorizado) {
+          return { valido: false, erro: escopo.erro };
+        }
+
+        return {
+          valido: true,
+          role: escopo.role,
+          authPorSenhaMaster: false,
+          nomeUsuario: escopo.nomeUsuario || "",
+          subsecoesPermitidas: escopo.subsecoesPermitidas,
+          varasPermitidas: escopo.varasPermitidas,
+          varaFixa: escopo.varaFixa
+        };
       }
     }
 
@@ -816,6 +1269,7 @@
       try { sessionStorage.removeItem("maestro_mobile_key"); } catch (e) {}
       sessaoUsuario = null;
       todasPautas = [];
+      todasPericiasPje = [];
       bancoPeritosMobile = [];
       pautasParaImportar = [];
       exibirTelaLogin();
@@ -825,32 +1279,131 @@
   // =========================================================================
   // 5. INICIALIZAÇÃO DA ÁREA LOGADA & RESTRIÇÃO DE ESCOPO
   // =========================================================================
+  function aplicarEscopoSessaoNaUI() {
+    if (!sessaoUsuario) return;
+
+    const subId = sessaoUsuario.subsecaoId;
+    const subInfo = SUBSECOES_MAP[subId] || { nome: sessaoUsuario.subsecaoNome || subId, varas: [] };
+    const varasAuth = resolverVarasAutorizadasSubsecao(sessaoUsuario, subId);
+    const subsAuth = obterSubsecoesAutorizadasSessao(sessaoUsuario);
+    const podeEnviar = podeEnviarPautasNaSessao(sessaoUsuario);
+    const labelVaras = obterLabelEscopoVaras(sessaoUsuario, subId);
+    const ehVaraUnicaRestrita = sessaoUsuario.role !== "Master" && varasAuth.length === 1 && (subInfo.varas?.length || 0) > 1;
+
+    // 1. Seletor rápido de Subseção no cabeçalho para Masters/Gestores com >1 subseção
+    const lblNomeSub = document.getElementById("lblNomeSubsecao");
+    const selHeaderSub = document.getElementById("selectHeaderSubsecao");
+    if (selHeaderSub && lblNomeSub) {
+      if (subsAuth.length > 1) {
+        selHeaderSub.innerHTML = subsAuth.map((id) => {
+          const s = SUBSECOES_MAP[id];
+          return `<option value="${escapeHtml(id)}" ${id === subId ? "selected" : ""}>${escapeHtml(s ? s.nome : id)}</option>`;
+        }).join("");
+        selHeaderSub.style.display = "inline-block";
+        lblNomeSub.style.display = "none";
+      } else {
+        selHeaderSub.style.display = "none";
+        lblNomeSub.style.display = "inline";
+        lblNomeSub.textContent = subInfo.nome;
+      }
+    }
+
+    // 2. Identificação do usuário e perfil
+    const cpfMask = mascararCpfMobile(sessaoUsuario.usuarioCpf);
+    const lblUsuario = document.getElementById("lblUsuarioNome");
+    if (lblUsuario) {
+      lblUsuario.textContent = sessaoUsuario.usuarioNome
+        ? `${sessaoUsuario.usuarioNome}${cpfMask ? ` (${cpfMask})` : ""}`
+        : (cpfMask || "Servidor Autorizado");
+    }
+
+    const lblRole = document.getElementById("lblPerfilRole");
+    if (lblRole) {
+      lblRole.className = "badge-role";
+      if (sessaoUsuario.role === "Master") {
+        lblRole.textContent = "👑 Master";
+        lblRole.classList.add("badge-role-master");
+      } else if (!podeEnviar) {
+        lblRole.textContent = sessaoUsuario.role === "Observador" ? "👁️ Observador" : "🎧 Leitor";
+        lblRole.classList.add("badge-role-restrito");
+      } else if (ehVaraUnicaRestrita) {
+        lblRole.textContent = `✍️ ${varasAuth[0]}ª VF`;
+        lblRole.classList.add("badge-role-leitor");
+      } else if (subsAuth.length > 1 || varasAuth.length > 1) {
+        lblRole.textContent = "✍️ Gestor";
+      } else {
+        lblRole.textContent = "✍️ Editor";
+      }
+    }
+
+    const badgePerm = document.getElementById("badgePermissaoEnvioWpp");
+    if (badgePerm) {
+      badgePerm.textContent = `${sessaoUsuario.role} (${subInfo.nome} • ${labelVaras})`;
+    }
+
+    let escopoMsg = "";
+    if (sessaoUsuario.role === "Master") {
+      escopoMsg = `👑 Acesso Master (${subInfo.nome}: Todas as Varas)`;
+    } else if (!podeEnviar) {
+      escopoMsg = `👁️ Somente Leitura • ${subInfo.nome} (${labelVaras})`;
+    } else if (ehVaraUnicaRestrita) {
+      escopoMsg = `🔒 Acesso Exclusivo: ${varasAuth[0]}ª Vara Federal (${subInfo.nome})`;
+    } else {
+      const prefixoGestor = subsAuth.length > 1 ? `Gestor (${subsAuth.length} Subseções)` : `Subseção de ${subInfo.nome}`;
+      escopoMsg = `🔓 ${prefixoGestor} • Varas: ${labelVaras}`;
+    }
+
+    document.getElementById("lblEscopoRestricao").textContent = escopoMsg;
+    document.getElementById("lblRelatorioSubsecao").textContent = ehVaraUnicaRestrita ? `${subInfo.nome} • ${varasAuth[0]}ª VF` : subInfo.nome;
+    document.getElementById("lblSubsecaoEscopoFiltro").textContent = ehVaraUnicaRestrita ? `${subInfo.nome} (${varasAuth[0]}ª VF)` : `Subseção: ${subInfo.nome}`;
+
+    // 3. Ocultar/bloquear aba de envio WhatsApp para perfis somente leitura
+    const btnTabWpp = document.querySelector(".main-tabs .tab-btn[data-tab='tabWhatsapp']");
+    const btnQuickWpp = document.getElementById("btnQuickWhatsapp");
+    if (btnTabWpp) btnTabWpp.style.display = podeEnviar ? "flex" : "none";
+    if (btnQuickWpp) btnQuickWpp.style.display = podeEnviar ? "inline-flex" : "none";
+    if (!podeEnviar && document.getElementById("tabWhatsapp")?.classList.contains("active")) {
+      window.trocarAba("tabDashboard");
+    }
+
+    popularFiltroVaras(varasAuth);
+    popularFiltroVarasPorDia(varasAuth);
+    popularVaraPadraoWpp(varasAuth);
+  }
+
+  function trocarSubsecaoMobile(novaSubId) {
+    if (!sessaoUsuario || !novaSubId || !SUBSECOES_MAP[novaSubId]) return;
+    const subsAuth = obterSubsecoesAutorizadasSessao(sessaoUsuario);
+    if (!subsAuth.includes(novaSubId)) {
+      alert(`🔒 Você não possui acesso à subseção "${SUBSECOES_MAP[novaSubId]?.nome || novaSubId}".`);
+      aplicarEscopoSessaoNaUI();
+      return;
+    }
+
+    const subInfo = SUBSECOES_MAP[novaSubId];
+    sessaoUsuario.subsecaoId = novaSubId;
+    sessaoUsuario.subsecaoNome = subInfo.nome;
+    sessaoUsuario.subsecaoDesc = subInfo.descricao;
+    localStorage.setItem("maestro_mobile_session", JSON.stringify(sessaoUsuario));
+
+    todasPericiasPje = [];
+    pautasParaImportar = [];
+    const areaPrev = document.getElementById("areaPreviewImportWpp");
+    if (areaPrev) areaPrev.style.display = "none";
+
+    aplicarEscopoSessaoNaUI();
+    carregarBancoPeritosCache(novaSubId);
+    atualizarBannerFilaOffline();
+    window.sincronizarPautas(obterChaveNuvemSessao());
+  }
+
   function iniciarAplicativoComSessao(chaveTemporaria = "") {
     if (!sessaoUsuario) return;
 
     document.getElementById("screenLogin").classList.remove("active");
     document.getElementById("screenApp").classList.add("active");
 
-    const subInfo = SUBSECOES_MAP[sessaoUsuario.subsecaoId] || { nome: sessaoUsuario.subsecaoNome, varas: [] };
-
-    document.getElementById("lblNomeSubsecao").textContent = subInfo.nome;
-    document.getElementById("lblUsuarioNome").textContent = sessaoUsuario.usuarioCpf;
-    document.getElementById("lblPerfilRole").textContent = sessaoUsuario.role;
-
-    const badgePerm = document.getElementById("badgePermissaoEnvioWpp");
-    if (badgePerm) {
-      badgePerm.textContent = `${sessaoUsuario.role} (${subInfo.nome})`;
-    }
-
-    const escopoMsg = sessaoUsuario.role === "Master"
-      ? `👑 Acesso Master (Subseção Ativa: ${subInfo.nome})`
-      : `🔒 Restrito à Subseção de ${subInfo.nome} (${subInfo.varas ? subInfo.varas.map((v) => v + "ª").join(", ") : "Varas Cadastradas"})`;
-    document.getElementById("lblEscopoRestricao").textContent = escopoMsg;
-    document.getElementById("lblRelatorioSubsecao").textContent = subInfo.nome;
-    document.getElementById("lblSubsecaoEscopoFiltro").textContent = "Subseção: " + subInfo.nome;
-
-    popularFiltroVaras(subInfo.varas || []);
-    popularVaraPadraoWpp(subInfo.varas || []);
+    aplicarEscopoSessaoNaUI();
     carregarBancoPeritosCache(sessaoUsuario.subsecaoId);
     atualizarBannerFilaOffline();
 
@@ -859,23 +1412,46 @@
     if (textoCompartilhadoPendente) {
       const recebido = textoCompartilhadoPendente;
       textoCompartilhadoPendente = null;
-      window.trocarAba("tabWhatsapp");
-      const txtEl = document.getElementById("txtConversaWhatsApp");
-      if (txtEl) txtEl.value = recebido;
-      interpretarTextoWhatsApp();
+      try { sessionStorage.removeItem("maestro_mobile_shared_pending"); } catch (e) {}
+      if (podeEnviarPautasNaSessao()) {
+        window.trocarAba("tabWhatsapp");
+        const txtEl = document.getElementById("txtConversaWhatsApp");
+        if (txtEl) txtEl.value = recebido;
+        interpretarTextoWhatsApp();
+      } else {
+        alert("👁️ Seu perfil é Somente Leitura e não possui permissão para importar pautas.");
+      }
     }
   }
 
-  function popularFiltroVaras(varas) {
-    const select = document.getElementById("filtroVara");
+  function preencherSelectFiltroVaras(selectId, varas) {
+    const select = document.getElementById(selectId);
     if (!select) return;
-    select.innerHTML = '<option value="">Todas as Varas</option>';
-    varas.forEach((v) => {
+    const lista = Array.isArray(varas) ? varas : [];
+    if (lista.length === 1) {
+      select.innerHTML = `<option value="${escapeHtml(lista[0])}">${escapeHtml(lista[0])}ª Vara Federal (Exclusiva)</option>`;
+      select.value = lista[0];
+      select.disabled = true;
+      select.title = `Acesso exclusivo à ${lista[0]}ª Vara Federal`;
+      return;
+    }
+    select.disabled = false;
+    select.title = "";
+    select.innerHTML = '<option value="">Todas as Varas Autorizadas</option>';
+    lista.forEach((v) => {
       const opt = document.createElement("option");
       opt.value = v;
       opt.textContent = `${v}ª Vara Federal`;
       select.appendChild(opt);
     });
+  }
+
+  function popularFiltroVaras(varas) {
+    preencherSelectFiltroVaras("filtroVara", varas);
+  }
+
+  function popularFiltroVarasPorDia(varas) {
+    preencherSelectFiltroVaras("filtroVaraPorDia", varas);
   }
 
   function popularVaraPadraoWpp(varas) {
@@ -889,7 +1465,15 @@
       opt.textContent = `${v}ª Vara Federal`;
       sel.appendChild(opt);
     });
-    if (lista.includes("19")) sel.value = "19";
+    if (lista.length === 1) {
+      sel.value = lista[0];
+      sel.disabled = true;
+      sel.title = `Travado na ${lista[0]}ª Vara Federal pelo Administrador Master`;
+    } else {
+      sel.disabled = false;
+      sel.title = "";
+      if (lista.includes("19")) sel.value = "19";
+    }
   }
 
   function carregarBancoPeritosCache(subId) {
@@ -930,6 +1514,222 @@
   // =========================================================================
   // 6. SINCRONIZAÇÃO DE PAUTAS & PERITOS (FIRESTORE E2EE + FALLBACK LOCAL)
   // =========================================================================
+  function removerAcentosLowerMobile(str) {
+    return String(str || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .trim();
+  }
+
+  function extrairDataIsoPericiaMobile(item) {
+    if (!item || typeof item !== "object") return "";
+    const rawIso = String(item.dataPericiaIso || item.dataIso || item.data || "").trim();
+    const mIso = rawIso.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (mIso) {
+      return `${mIso[1]}-${mIso[2].padStart(2, "0")}-${mIso[3].padStart(2, "0")}`;
+    }
+    const rawBr = String(item.dataPericia || item.dataRealizacao || rawIso).trim();
+    const mBr = rawBr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    if (mBr) {
+      let ano = mBr[3];
+      if (ano.length === 2) ano = `20${ano}`;
+      return `${ano}-${mBr[2].padStart(2, "0")}-${mBr[1].padStart(2, "0")}`;
+    }
+    return "";
+  }
+
+  function ehPericiaPjeCanceladaOuInvalidaMobile(item) {
+    if (!item || typeof item !== "object") return true;
+    if (item.cancelada === true || item.cancelada === "true") return true;
+    const txt = removerAcentosLowerMobile(
+      `${item.status || ""} ${item.situacao || ""} ${item.situacaoPje || ""} ${item.motivo || ""} ${item.objeto || ""}`
+    );
+    if (/cancelad|cancelamento|prejudicad|redesignad|suspens|desmarcad|anulad|sem\s*efeito|excluid/i.test(txt)) return true;
+    const proc = String(item.processoLimpo || item.processo || "").replace(/\D/g, "");
+    if (proc.length < 15) return true;
+    return false;
+  }
+
+  function extrairVaraNumeroPericiaMobile(varaStr) {
+    const raw = String(varaStr || "").trim();
+    if (!raw) return "";
+    const m = raw.match(/(\d+)\s*[ªa°]?/i);
+    return m ? normalizarNumeroVara(m[1]) : normalizarNumeroVara(raw);
+  }
+
+  function normalizarPericiaPjeMobile(raw, subIdFallback = "sobral") {
+    if (!raw || typeof raw !== "object") return null;
+    if (ehPericiaPjeCanceladaOuInvalidaMobile(raw)) return null;
+    const dataPericiaIso = extrairDataIsoPericiaMobile(raw);
+    if (!dataPericiaIso) return null;
+    const processo = String(raw.processo || raw.processoLimpo || "").trim();
+    const processoLimpo = processo.replace(/\D/g, "");
+    const horaRaw = String(raw.horaPericia || raw.hora || "").trim();
+    const mHora = horaRaw.match(/(\d{1,2}):(\d{2})/);
+    const horaPericia = mHora ? `${mHora[1].padStart(2, "0")}:${mHora[2]}` : (horaRaw || "--:--");
+    const vara = String(raw.vara || raw.varaPericia || "").trim();
+    const varaNum = extrairVaraNumeroPericiaMobile(vara);
+
+    return {
+      processo: processo || processoLimpo,
+      processoLimpo,
+      dataPericiaIso,
+      horaPericia,
+      perito: String(raw.perito || raw.nomePerito || "Perito não informado").trim(),
+      especialidade: String(raw.especialidade || raw.tipoPericia || "").trim(),
+      vara: vara || (varaNum ? `${varaNum}ª Vara Federal` : ""),
+      varaNum,
+      periciado: String(raw.periciado || raw.autor || raw.nomePericiado || "Periciando").trim(),
+      statusAtendimento: String(raw.statusAtendimento || "AGUARDANDO_CHEGADA").trim().toUpperCase(),
+      presencaConfirmada: Boolean(raw.presencaConfirmada),
+      urgenciaMedica: Boolean(raw.urgenciaMedica),
+      horarioCheckin: String(raw.horarioCheckin || "").trim(),
+      sala: String(raw.sala || "").trim(),
+      ultimaChamadaHora: String(raw.ultimaChamadaHora || "").trim(),
+      subsecaoId: String(raw.subsecaoId || subIdFallback || "sobral").trim().toLowerCase()
+    };
+  }
+
+  function aplicarFiltroRestritoPericiasPje(lista, subIdAutorizada) {
+    const subNorm = String(subIdAutorizada || "").trim().toLowerCase();
+    const subInfo = SUBSECOES_MAP[subNorm];
+    const varasSub = Array.isArray(subInfo?.varas) ? subInfo.varas.map(normalizarNumeroVara) : [];
+    const varasAuth = resolverVarasAutorizadasSubsecao(sessaoUsuario, subNorm);
+    const acessoIrrestritoSub = !sessaoUsuario || sessaoUsuario.role === "Master" || varasAuth.length >= varasSub.length;
+
+    return (lista || []).filter((p) => {
+      if (!p || ehPericiaPjeCanceladaOuInvalidaMobile(p)) return false;
+      if (p.subsecaoId && subNorm && String(p.subsecaoId).toLowerCase() !== subNorm) return false;
+      const vNum = p.varaNum || extrairVaraNumeroPericiaMobile(p.vara);
+      if (vNum) {
+        if (varasSub.length > 0 && !varasSub.includes(vNum)) return false;
+        if (sessaoUsuario && !isVaraAutorizadaNaSessao(vNum, sessaoUsuario, subNorm)) return false;
+        return true;
+      }
+      return acessoIrrestritoSub;
+    });
+  }
+
+  function carregarPericiasPjeCache(subId, bloquear = false) {
+    if (bloquear) return [];
+    try {
+      const raw = localStorage.getItem(`maestro_pericias_pje_${subId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {}
+    return [];
+  }
+
+  function salvarPericiasPjeCache(subId, lista) {
+    try {
+      localStorage.setItem(`maestro_pericias_pje_${subId}`, JSON.stringify(lista || []));
+    } catch (e) {}
+  }
+
+  async function carregarBasePericiasPjeNuvemMobile(projectId, subId, chaveNuvem, docSubsecaoFields = null) {
+    if (!projectId || !subId || projectId.includes("exemplo")) {
+      return { itens: [], timestamp: 0 };
+    }
+    let itensBrutos = null;
+    let timestamp = 0;
+
+    try {
+      const urlChamada = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/subsecoes/${encodeURIComponent(subId)}_CHAMADA`;
+      const respChamada = await fetch(urlChamada, { method: "GET", cache: "no-store" });
+      if (respChamada.ok) {
+        const doc = await respChamada.json();
+        const f = doc.fields || {};
+        timestamp = parseInt(f.timestampAtualizacaoBase?.integerValue || "0", 10) || 0;
+        const shardingAtivo = f.shardingAtivo?.booleanValue === true;
+        const totalShards = parseInt(f.totalShards?.integerValue || "0", 10) || 0;
+
+        if (shardingAtivo && totalShards > 0) {
+          let shardIds = [];
+          if (f.shardIdsJson?.stringValue) {
+            try {
+              const parsedIds = JSON.parse(f.shardIdsJson.stringValue);
+              if (Array.isArray(parsedIds)) {
+                shardIds = parsedIds.filter((s) => typeof s === "string" && s.trim()).slice(0, totalShards);
+              }
+            } catch (e) {}
+          }
+          if (shardIds.length === 0) {
+            shardIds = Array.from({ length: totalShards }, (_, idx) => `${subId}_CHAMADA_SHARD_${idx}`);
+          }
+
+          const shardsDocs = await Promise.all(shardIds.map(async (sId) => {
+            try {
+              const urlS = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/subsecoes/${encodeURIComponent(sId)}`;
+              const rS = await fetch(urlS, { method: "GET", cache: "no-store" });
+              if (!rS.ok) return null;
+              return await rS.json();
+            } catch (e) {
+              return null;
+            }
+          }));
+
+          const acum = [];
+          for (const shardDoc of shardsDocs) {
+            const sf = shardDoc?.fields;
+            if (!sf?.payloadJson?.stringValue) continue;
+            const decShard = await decodificarOuDecifrarDadoNuvemMobile(
+              sf.payloadJson.stringValue,
+              sf.ivPayload?.stringValue,
+              sf.saltPayload?.stringValue,
+              chaveNuvem
+            );
+            if (Array.isArray(decShard)) {
+              acum.push(...decShard);
+            }
+          }
+          if (acum.length > 0) {
+            itensBrutos = acum;
+          }
+        }
+
+        if ((!Array.isArray(itensBrutos) || itensBrutos.length === 0) && f.basePericiasJson?.stringValue) {
+          const decInline = await decodificarOuDecifrarDadoNuvemMobile(
+            f.basePericiasJson.stringValue,
+            f.ivBasePericias?.stringValue,
+            f.saltBasePericias?.stringValue,
+            chaveNuvem
+          );
+          if (Array.isArray(decInline)) {
+            itensBrutos = decInline;
+          }
+        }
+      }
+    } catch (eChamada) {
+      console.warn("[Maestro Mobile] Falha ao ler _CHAMADA:", eChamada.message);
+    }
+
+    if ((!Array.isArray(itensBrutos) || itensBrutos.length === 0) && docSubsecaoFields?.basePericiasJson?.stringValue) {
+      try {
+        const decSub = await decodificarOuDecifrarDadoNuvemMobile(
+          docSubsecaoFields.basePericiasJson.stringValue,
+          docSubsecaoFields.ivBasePericias?.stringValue,
+          docSubsecaoFields.saltBasePericias?.stringValue,
+          chaveNuvem
+        );
+        if (Array.isArray(decSub)) {
+          itensBrutos = decSub;
+          if (!timestamp) {
+            timestamp = parseInt(docSubsecaoFields.timestampBasePericias?.integerValue || "0", 10) || 0;
+          }
+        }
+      } catch (eSub) {}
+    }
+
+    const normalizados = Array.isArray(itensBrutos)
+      ? itensBrutos.map((raw) => normalizarPericiaPjeMobile(raw, subId)).filter(Boolean)
+      : [];
+
+    return { itens: normalizados, timestamp };
+  }
+
   window.sincronizarPautas = async function (chaveExplicita = "") {
     if (!sessaoUsuario) return;
 
@@ -937,9 +1737,14 @@
 
     try {
       let pautasCarregadas = [];
+      let periciasPjeCarregadas = [];
       let peritosCarregados = [];
       const chaveNuvem = chaveExplicita || obterChaveNuvemSessao();
       const subId = sessaoUsuario.subsecaoId;
+
+      let erroDecifragemChave = false;
+      let tombstonesNuvem = {};
+      let docSubsecaoFields = null;
 
       // 1. Tenta carregar do Firestore se houver Project ID configurado
       if (sessaoUsuario.projectId && sessaoUsuario.projectId.trim() && !sessaoUsuario.projectId.includes("exemplo")) {
@@ -949,41 +1754,110 @@
           if (resp.ok) {
             const doc = await resp.json();
             const fields = doc.fields || {};
+            docSubsecaoFields = fields;
 
-            const parsedPeritos = await decodificarOuDecifrarDadoNuvemMobile(
-              fields.bancoPeritosJson?.stringValue,
-              fields.ivPeritos?.stringValue || fields.iv?.stringValue,
-              fields.saltPeritos?.stringValue || fields.salt?.stringValue,
-              chaveNuvem
-            );
-            if (Array.isArray(parsedPeritos) && parsedPeritos.length > 0) {
-              peritosCarregados = parsedPeritos;
+            if (fields.bancoPeritosJson?.stringValue) {
+              try {
+                const parsedPeritos = await decodificarOuDecifrarDadoNuvemMobile(
+                  fields.bancoPeritosJson.stringValue,
+                  fields.ivPeritos?.stringValue || fields.iv?.stringValue,
+                  fields.saltPeritos?.stringValue || fields.salt?.stringValue,
+                  chaveNuvem
+                );
+                if (Array.isArray(parsedPeritos) && parsedPeritos.length > 0) {
+                  peritosCarregados = parsedPeritos;
+                }
+              } catch (ePer) {}
             }
 
-            const parsedEscala = await decodificarOuDecifrarDadoNuvemMobile(
-              fields.escalaPautasJson?.stringValue,
-              fields.ivEscala?.stringValue || fields.iv?.stringValue,
-              fields.saltEscala?.stringValue || fields.salt?.stringValue,
-              chaveNuvem
-            );
-            if (Array.isArray(parsedEscala) && parsedEscala.length > 0) {
-              pautasCarregadas = converterPautasFirestore(parsedEscala);
+            if (fields.escalaTombstonesJson?.stringValue) {
+              try {
+                const decTomb = await decodificarOuDecifrarDadoNuvemMobile(
+                  fields.escalaTombstonesJson.stringValue,
+                  fields.ivTombstones?.stringValue,
+                  fields.saltTombstones?.stringValue,
+                  chaveNuvem
+                );
+                if (decTomb && typeof decTomb === "object") {
+                  tombstonesNuvem = decTomb;
+                }
+              } catch (eTomb) {}
+            }
+
+            if (fields.escalaPautasJson?.stringValue) {
+              let parsedEscala = null;
+              try {
+                parsedEscala = await decodificarOuDecifrarDadoNuvemMobile(
+                  fields.escalaPautasJson.stringValue,
+                  fields.ivEscala?.stringValue || fields.iv?.stringValue,
+                  fields.saltEscala?.stringValue || fields.salt?.stringValue,
+                  chaveNuvem
+                );
+              } catch (eEsc) {
+                erroDecifragemChave = true;
+              }
+              if (parsedEscala === null) {
+                erroDecifragemChave = true;
+              } else if (Array.isArray(parsedEscala)) {
+                pautasCarregadas = converterPautasFirestore(parsedEscala).filter((item) => {
+                  const k = gerarChaveUnicaPauta(item);
+                  const tomb = tombstonesNuvem[k] || (item.id && tombstonesNuvem[String(item.id)]);
+                  if (!tomb) return true;
+                  const delTs = Number(tomb.deletedAt || tomb || 0);
+                  const updTs = Number(item.updatedAt || item.createdAt || 0);
+                  return updTs > delTs;
+                });
+              }
             }
           }
         } catch (eNuvem) {
-          console.warn("Nuvem indisponível ou chave AES divergente, recorrendo à base local:", eNuvem.message);
+          console.warn("Nuvem indisponível:", eNuvem.message);
         }
+
+        if (!erroDecifragemChave) {
+          try {
+            const pjeRes = await carregarBasePericiasPjeNuvemMobile(
+              sessaoUsuario.projectId,
+              subId,
+              chaveNuvem,
+              docSubsecaoFields
+            );
+            if (Array.isArray(pjeRes.itens) && pjeRes.itens.length > 0) {
+              periciasPjeCarregadas = pjeRes.itens;
+            }
+            if (pjeRes.timestamp) {
+              ultimaSyncPautaPjeTs = pjeRes.timestamp;
+            }
+          } catch (ePjeNuvem) {
+            console.warn("[Maestro Mobile] Pauta PJe nuvem:", ePjeNuvem.message);
+          }
+        }
+      }
+
+      if (erroDecifragemChave) {
+        alert(
+          "⚠️ Chave AES-256 incorreta ou alterada no Desktop.\n\n" +
+          "Não foi possível decifrar as pautas da nuvem com a chave atual. Confira a chave no Maestro Desktop e atualize seu login."
+        );
       }
 
       // 2. Fallback para chrome.storage.local se aberto como janela da extensão
       if (ehAmbienteExtensaoChrome()) {
         try {
-          const store = await chrome.storage.local.get([`escalaPautas_${subId}`, `bancoPeritos_${subId}`]);
+          const baseKeySub = `basePericiasPje_${subId}`;
+          const store = await chrome.storage.local.get([`escalaPautas_${subId}`, `bancoPeritos_${subId}`, baseKeySub, "basePericiasPje"]);
           if ((!pautasCarregadas || pautasCarregadas.length === 0) && Array.isArray(store[`escalaPautas_${subId}`])) {
             pautasCarregadas = converterPautasFirestore(store[`escalaPautas_${subId}`]);
           }
           if ((!peritosCarregados || peritosCarregados.length === 0) && Array.isArray(store[`bancoPeritos_${subId}`])) {
             peritosCarregados = store[`bancoPeritos_${subId}`];
+          }
+          if (!periciasPjeCarregadas || periciasPjeCarregadas.length === 0) {
+            const rawLocalPje = Array.isArray(store[baseKeySub]) ? store[baseKeySub] : store.basePericiasPje;
+            const arrLocalPje = Array.isArray(rawLocalPje) ? rawLocalPje : (rawLocalPje?.listaFinal || []);
+            if (Array.isArray(arrLocalPje) && arrLocalPje.length > 0) {
+              periciasPjeCarregadas = arrLocalPje.map((raw) => normalizarPericiaPjeMobile(raw, subId)).filter(Boolean);
+            }
           }
         } catch (eExt) {}
       }
@@ -997,11 +1871,19 @@
       }
 
       if (!pautasCarregadas || pautasCarregadas.length === 0) {
-        pautasCarregadas = carregarPautasLocaisSubsecao(subId);
+        pautasCarregadas = carregarPautasLocaisSubsecao(subId, erroDecifragemChave);
+      }
+
+      if (!periciasPjeCarregadas || periciasPjeCarregadas.length === 0) {
+        periciasPjeCarregadas = carregarPericiasPjeCache(subId, erroDecifragemChave);
       }
 
       todasPautas = aplicarFiltroRestritoSubsecao(pautasCarregadas, subId);
-      salvarCacheLocal(subId, todasPautas);
+      todasPericiasPje = aplicarFiltroRestritoPericiasPje(periciasPjeCarregadas, subId);
+      if (!erroDecifragemChave) {
+        salvarCacheLocal(subId, todasPautas);
+        salvarPericiasPjeCache(subId, todasPericiasPje);
+      }
       atualizarInterfaceCompleta();
     } catch (err) {
       console.error("Erro na sincronização:", err);
@@ -1011,7 +1893,7 @@
     }
   };
 
-  function carregarPautasLocaisSubsecao(subId) {
+  function carregarPautasLocaisSubsecao(subId, bloquearMock = false) {
     try {
       const cache = localStorage.getItem(`maestro_pautas_${subId}`);
       if (cache) {
@@ -1019,6 +1901,10 @@
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
     } catch (e) {}
+
+    if (bloquearMock) {
+      return [];
+    }
 
     if (subId === "sobral") {
       return RAW_PAUTAS_SOBRAL_BASE.map((p, idx) => converterItemUnicoCanonico({
@@ -1124,10 +2010,13 @@
       if (p.subsecaoId && p.subsecaoId !== subIdAutorizada) return false;
       const subInfo = SUBSECOES_MAP[subIdAutorizada];
       if (subInfo && subInfo.varas && subInfo.varas.length > 0) {
-        const varaPauta = String(p.vara).replace(/\D/g, "");
+        const varaPauta = normalizarNumeroVara(p.vara);
         if (varaPauta && !subInfo.varas.includes(varaPauta)) {
           return false;
         }
+      }
+      if (sessaoUsuario && !isVaraAutorizadaNaSessao(p.vara, sessaoUsuario, subIdAutorizada)) {
+        return false;
       }
       return true;
     });
@@ -1152,18 +2041,30 @@
   function gerarChaveUnicaPauta(p) {
     const d = String(p?.data || "").trim();
     const n = (Parser ? Parser.removerAcentos(p?.peritoNome || "") : String(p?.peritoNome || "")).toLowerCase().trim();
-    const v = String(p?.vara || "").toLowerCase().trim();
+    const vRaw = String(p?.vara || "").trim();
+    const vNum = vRaw.replace(/\D/g, "");
+    const v = (vNum || vRaw).toLowerCase();
     const h = String(p?.horaInicio || p?.hora || "").trim();
     return `${d}_${n}_${v}_${h}`;
   }
 
-  function mesclarListasEscala(listaBase, listaNovas) {
+  function estaExcluidaPorTombstoneMobile(p, tombstones) {
+    if (!p || !tombstones || typeof tombstones !== "object") return false;
+    const k = gerarChaveUnicaPauta(p);
+    const tomb = (k && k !== "___" ? tombstones[k] : null) || (p.id ? tombstones[String(p.id)] : null);
+    if (!tomb) return false;
+    const delTs = Number(tomb.deletedAt || tomb || 0);
+    const updTs = Number(p.updatedAt || p.createdAt || 0);
+    return updTs <= delTs;
+  }
+
+  function mesclarListasEscala(listaBase, listaNovas, tombstones = null) {
     const base = Array.isArray(listaBase) ? listaBase : [];
     const novas = Array.isArray(listaNovas) ? listaNovas : [];
     const mapa = new Map();
 
     base.forEach((item) => {
-      if (!item) return;
+      if (!item || estaExcluidaPorTombstoneMobile(item, tombstones)) return;
       const k = gerarChaveUnicaPauta(item);
       if (k && k !== "___") {
         mapa.set(k, { ...item });
@@ -1177,18 +2078,31 @@
 
     novas.forEach((nova) => {
       if (!nova) return;
-      const k = gerarChaveUnicaPauta(nova);
-      if (k && mapa.has(k)) {
+      const itemComTs = {
+        ...nova,
+        updatedAt: Number(nova.updatedAt || nova.createdAt || Date.now())
+      };
+      if (estaExcluidaPorTombstoneMobile(itemComTs, tombstones)) return;
+      const k = gerarChaveUnicaPauta(itemComTs);
+      if (k && k !== "___" && mapa.has(k)) {
         const existente = mapa.get(k);
         mapa.set(k, {
           ...existente,
-          ...nova,
-          id: existente.id || nova.id
+          ...itemComTs,
+          id: existente.id || itemComTs.id
+        });
+        atualizadas++;
+      } else if (itemComTs.id && mapa.has(String(itemComTs.id))) {
+        const existente = mapa.get(String(itemComTs.id));
+        mapa.set(String(itemComTs.id), {
+          ...existente,
+          ...itemComTs,
+          id: existente.id || itemComTs.id
         });
         atualizadas++;
       } else {
-        const keyFinal = (k && k !== "___") ? k : String(nova.id || `mob_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
-        mapa.set(keyFinal, { ...nova });
+        const keyFinal = (k && k !== "___") ? k : String(itemComTs.id || `mob_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+        mapa.set(keyFinal, itemComTs);
         adicionadas++;
       }
     });
@@ -1242,7 +2156,37 @@
     if (msgBox) msgBox.style.display = "none";
   }
 
+  function atualizarResumoPadraoPeritoMobile() {
+    const infoEl = document.getElementById("wppMobilePadraoPeritoInfo");
+    const inp = document.getElementById("inpPeritoPadraoWpp");
+    if (!infoEl || !inp || !Parser) return;
+    const nomeRaw = String(inp.value || "").trim();
+    if (!nomeRaw) {
+      infoEl.style.display = "none";
+      infoEl.innerHTML = "";
+      return;
+    }
+    const match = Parser.encontrarPeritoNoTexto(nomeRaw, bancoPeritosMobile);
+    if (!match || !match.peritoObj) {
+      infoEl.style.display = "block";
+      infoEl.innerHTML = `<div class="wpp-alert-pill">👤 Perito padrão: <b>${escapeHtml(match?.nome || nomeRaw)}</b> (regras gerais padrão)</div>`;
+      return;
+    }
+    const varaPadrao = document.getElementById("selVaraPadraoWpp")?.value || "";
+    const r = Parser.obterRegrasVaraPerito(match.peritoObj, varaPadrao);
+    const pp = r.padraoPauta || {};
+    const modoDesc = pp.turnosPadrao === "manha_tarde"
+      ? `Manhã (${escapeHtml(pp.horaInicioManha || "08:00")}, ${pp.vagasManha || r.procsPorPauta}v) + Tarde (${escapeHtml(pp.horaInicioTarde || "auto")}, ${pp.vagasTarde || pp.vagasManha || r.procsPorPauta}v)`
+      : `1 turno (${escapeHtml(pp.horaInicioManha || "08:00")}, ${pp.vagasManha || r.procsPorPauta}v)`;
+    infoEl.style.display = "block";
+    infoEl.innerHTML = `<div class="wpp-alert-pill">⚡ <b>${escapeHtml(match.nome)}</b>: ${modoDesc} • ${r.intervaloMin} min${r.localExternoPadrao ? ` • 🏥 ${escapeHtml(r.localExternoPadrao)}` : ""}</div>`;
+  }
+
   function interpretarTextoWhatsApp() {
+    if (!podeEnviarPautasNaSessao()) {
+      alert("👁️ Seu perfil é Somente Leitura e não possui permissão para importar pautas.");
+      return;
+    }
     const txtArea = document.getElementById("txtConversaWhatsApp");
     const rawText = (txtArea?.value || "").trim();
     if (!rawText) {
@@ -1256,24 +2200,42 @@
     }
 
     const subId = sessaoUsuario?.subsecaoId || "sobral";
-    const subInfo = SUBSECOES_MAP[subId] || { varas: ["19"] };
-    const varaPadrao = document.getElementById("selVaraPadraoWpp")?.value || subInfo.varas[0] || "19";
+    const varasAuth = resolverVarasAutorizadasSubsecao(sessaoUsuario, subId);
+    const varaPadrao = document.getElementById("selVaraPadraoWpp")?.value || varasAuth[0] || "19";
     const situacaoPadrao = document.getElementById("selSituacaoPadraoWpp")?.value || "Não marcado";
+    const peritoPadrao = document.getElementById("inpPeritoPadraoWpp")?.value.trim() || "";
+    const modoTurnos = document.getElementById("selModoTurnosWpp")?.value || "padrao_perito";
 
     const resultado = Parser.parsearConversaWhatsApp(rawText, {
       bancoPeritos: bancoPeritosMobile,
       varaPadrao,
-      subsecaoVaras: subInfo.varas,
-      situacaoPadrao
+      subsecaoVaras: varasAuth,
+      subsecaoId: subId,
+      situacaoPadrao,
+      peritoPadrao,
+      modoTurnos
     });
+
+    const avisos = [...(resultado.avisos || [])];
+    let qtdForaEscopo = 0;
 
     pautasParaImportar = (resultado.pautas || []).map((p) => {
       if (!p._meta) p._meta = {};
-      if (typeof p._meta.selecionada !== "boolean") p._meta.selecionada = true;
+      const autorizada = isVaraAutorizadaNaSessao(p.vara, sessaoUsuario, subId);
+      if (!autorizada) {
+        p._meta.selecionada = false;
+        qtdForaEscopo++;
+      } else if (typeof p._meta.selecionada !== "boolean") {
+        p._meta.selecionada = true;
+      }
       return p;
     });
 
-    renderizarCardsImportacaoWpp(resultado.avisos || []);
+    if (qtdForaEscopo > 0) {
+      avisos.unshift(`🔒 ${qtdForaEscopo} pauta(s) detectada(s) em Vara fora do seu escopo (${obterLabelEscopoVaras(sessaoUsuario, subId)}) foram desmarcadas. Ajuste a Vara ou remova o card antes de enviar.`);
+    }
+
+    renderizarCardsImportacaoWpp(avisos);
 
     const msgBox = document.getElementById("msgResultadoImportWpp");
     if (msgBox) msgBox.style.display = "none";
@@ -1285,10 +2247,14 @@
   }
 
   function adicionarPautaManualWpp() {
+    if (!podeEnviarPautasNaSessao()) {
+      alert("👁️ Seu perfil é Somente Leitura e não possui permissão para criar pautas.");
+      return;
+    }
     if (!Parser) return;
     const subId = sessaoUsuario?.subsecaoId || "sobral";
-    const subInfo = SUBSECOES_MAP[subId] || { varas: ["19"] };
-    const varaPadrao = document.getElementById("selVaraPadraoWpp")?.value || subInfo.varas[0] || "19";
+    const varasAuth = resolverVarasAutorizadasSubsecao(sessaoUsuario, subId);
+    const varaPadrao = document.getElementById("selVaraPadraoWpp")?.value || varasAuth[0] || "19";
     const situacaoPadrao = document.getElementById("selSituacaoPadraoWpp")?.value || "Não marcado";
 
     const nova = Parser.prepararPautaCanonica({
@@ -1321,7 +2287,7 @@
     const novoEstado = !todasMarcadas;
     pautasParaImportar.forEach((p) => {
       if (!p._meta) p._meta = {};
-      p._meta.selecionada = novoEstado;
+      p._meta.selecionada = novoEstado && isVaraAutorizadaNaSessao(p.vara);
     });
     renderizarCardsImportacaoWpp();
   }
@@ -1329,7 +2295,7 @@
   function verificarConflitosImportacao(itens) {
     const chavesExistentes = new Set(todasPautas.map(gerarChaveUnicaPauta));
     const subId = sessaoUsuario?.subsecaoId || "sobral";
-    const varasSub = (SUBSECOES_MAP[subId]?.varas) || ["18", "19", "31"];
+    const varasSub = resolverVarasAutorizadasSubsecao(sessaoUsuario, subId);
 
     return (itens || []).map((p, idx) => {
       const chave = gerarChaveUnicaPauta(p);
@@ -1352,7 +2318,10 @@
         }
       }
 
-      const pendencias = Parser ? Parser.calcularPendenciasPauta(p) : [];
+      const pendencias = Parser ? [...Parser.calcularPendenciasPauta(p)] : [];
+      if (!isVaraAutorizadaNaSessao(p.vara, sessaoUsuario, subId)) {
+        pendencias.push("Vara não autorizada para seu perfil");
+      }
       return { duplicata, choqueSala, totalSalasTurno, pendencias, varasSub };
     });
   }
@@ -1401,12 +2370,15 @@
     }
 
     const subId = sessaoUsuario?.subsecaoId || "sobral";
-    const varasBase = Array.from(new Set([...(SUBSECOES_MAP[subId]?.varas || ["18", "19", "31"])]));
+    const varasBase = resolverVarasAutorizadasSubsecao(sessaoUsuario, subId);
 
     listaEl.innerHTML = pautasParaImportar.map((p, idx) => {
       const diag = diagnosticos[idx];
       const selecionada = p._meta?.selecionada !== false;
       const ehFora = Parser ? Parser.ehLocalFora(p.local) : false;
+      const varaNorm = normalizarNumeroVara(p.vara);
+      const varaAutorizada = isVaraAutorizadaNaSessao(p.vara, sessaoUsuario, subId);
+      const travarVaraSelect = varasBase.length === 1 && varaAutorizada;
 
       const cardClasses = [
         "wpp-pauta-edit-card",
@@ -1423,10 +2395,15 @@
         diag.pendencias.length > 0 ? `<span class="wpp-mini-badge err">❗ ${escapeHtml(diag.pendencias.join(", "))}</span>` : ""
       ].filter(Boolean).join("");
 
-      const varasSelectOpts = Array.from(new Set([...varasBase, String(p.vara || "").trim()].filter(Boolean)));
-      const optionsVaraHtml = varasSelectOpts.map((v) =>
-        `<option value="${escapeHtml(v)}" ${String(p.vara) === String(v) ? "selected" : ""}>${escapeHtml(v)}ª Vara Federal</option>`
-      ).join("");
+      const optionsVaraLista = varasBase.map((v) =>
+        `<option value="${escapeHtml(v)}" ${varaNorm === String(v) ? "selected" : ""}>${escapeHtml(v)}ª Vara Federal</option>`
+      );
+      if (!varaAutorizada && varaNorm) {
+        optionsVaraLista.unshift(
+          `<option value="${escapeHtml(varaNorm)}" selected>🔒 ${escapeHtml(varaNorm)}ª VF (Não autorizada)</option>`
+        );
+      }
+      const optionsVaraHtml = optionsVaraLista.join("");
 
       const localTemNaLista = LOCAIS_PADRAO_OPTIONS.some((o) => o.value === p.local);
       const localOpts = localTemNaLista
@@ -1486,7 +2463,7 @@
             </div>
             <div class="wpp-field">
               <label>Vara *</label>
-              <select data-index="${idx}" data-field="vara">${optionsVaraHtml}</select>
+              <select data-index="${idx}" data-field="vara" ${travarVaraSelect ? 'disabled title="Vara travada pelo Administrador Master"' : ""}>${optionsVaraHtml}</select>
             </div>
           </div>
 
@@ -1593,7 +2570,7 @@
         const regras = Parser.obterRegrasVaraPerito(match.peritoObj, item.vara);
         if (!item.especialidade && regras.especialidade) item.especialidade = regras.especialidade;
         if (regras.atendeFora && !Parser.ehLocalFora(item.local)) {
-          item.local = "Clínica Própria";
+          item.local = regras.localExternoPadrao || "Clínica Própria";
         }
         if (Parser.ehLocalFora(item.local) && !item.endereco && regras.endereco) {
           item.endereco = regras.endereco;
@@ -1698,41 +2675,65 @@
           throw new Error("Chave AES-256 obrigatória para enviar dados à nuvem.");
         }
         chaveNuvem = digitada.trim();
-        salvarChaveNuvemSessao(chaveNuvem, true);
+        salvarChaveNuvemSessao(chaveNuvem, false);
       }
 
       const urlGet = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(sessaoUsuario.projectId)}/databases/(default)/documents/subsecoes/${encodeURIComponent(subId)}`;
       const respGet = await fetch(urlGet, { method: "GET", cache: "no-cache" });
 
       let escalaNuvemAtual = [];
+      let tombstonesNuvem = {};
       if (respGet.ok) {
         const doc = await respGet.json();
         const fields = doc.fields || {};
+
+        if (fields.escalaTombstonesJson?.stringValue) {
+          try {
+            const decTomb = await decodificarOuDecifrarDadoNuvemMobile(
+              fields.escalaTombstonesJson.stringValue,
+              fields.ivTombstones?.stringValue || fields.ivEscala?.stringValue,
+              fields.saltTombstones?.stringValue || fields.saltEscala?.stringValue,
+              chaveNuvem
+            );
+            if (decTomb && typeof decTomb === "object" && !Array.isArray(decTomb)) {
+              tombstonesNuvem = decTomb;
+            }
+          } catch (eTomb) {}
+        }
+
         if (fields.escalaPautasJson?.stringValue) {
-          const dec = await decodificarOuDecifrarDadoNuvemMobile(
-            fields.escalaPautasJson.stringValue,
-            fields.ivEscala?.stringValue || fields.iv?.stringValue,
-            fields.saltEscala?.stringValue || fields.salt?.stringValue,
-            chaveNuvem
-          );
-          if (Array.isArray(dec)) {
-            escalaNuvemAtual = dec;
+          let dec = null;
+          try {
+            dec = await decodificarOuDecifrarDadoNuvemMobile(
+              fields.escalaPautasJson.stringValue,
+              fields.ivEscala?.stringValue || fields.iv?.stringValue,
+              fields.saltEscala?.stringValue || fields.salt?.stringValue,
+              chaveNuvem
+            );
+          } catch (eDec) {
+            throw new Error("⚠️ Chave AES-256 incorreta ou dados corrompidos na nuvem. Envio cancelado para proteger a escala existente.");
           }
+          if (!Array.isArray(dec)) {
+            throw new Error("⚠️ Não foi possível decifrar a escala existente na nuvem com esta chave AES-256. Confira a chave no Desktop e tente novamente.");
+          }
+          escalaNuvemAtual = dec;
         }
       } else if (respGet.status !== 404) {
         throw new Error(`Falha ao consultar a nuvem (HTTP ${respGet.status}).`);
       }
 
-      const mesclado = mesclarListasEscala(escalaNuvemAtual, pautasCanonic);
+      const mesclado = mesclarListasEscala(escalaNuvemAtual, pautasCanonic, tombstonesNuvem);
       resultadoMergeFinal = mesclado;
 
+      const encoderUtf8 = new TextEncoder();
       const escalaStr = JSON.stringify(mesclado.listaFinal);
-      const estimativaCifrado = Math.ceil(escalaStr.length * 1.34);
-      const opcoesCripto = estimativaCifrado >= 400000
+      const bytesBruto = encoderUtf8.encode(escalaStr).length;
+      const estimativaCifrado = Math.ceil(bytesBruto * 1.34);
+      let opcoesCripto = estimativaCifrado >= 400000
         ? { comprimirGzip: true }
         : { autoGzipAcimaBytes: 131072 };
 
-      const resEscala = await cifrarTextoAESMobile(escalaStr, chaveNuvem, opcoesCripto);
+      let resEscala = await cifrarTextoAESMobile(escalaStr, chaveNuvem, opcoesCripto);
       const now = Date.now();
 
       const updateFields = [
@@ -1747,17 +2748,29 @@
       const maskQuery = updateFields.map((f) => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join("&");
       const urlPatch = `${urlGet}?${maskQuery}`;
 
-      const payloadPatch = {
+      const montarBodyPatch = (encObj) => ({
         fields: {
           subsecaoId: { stringValue: subId },
           encrypted: { booleanValue: true },
-          escalaPautasJson: { stringValue: resEscala.data },
-          ivEscala: { stringValue: resEscala.iv },
-          saltEscala: { stringValue: resEscala.salt },
+          escalaPautasJson: { stringValue: encObj.data },
+          ivEscala: { stringValue: encObj.iv },
+          saltEscala: { stringValue: encObj.salt },
           timestamp: { integerValue: String(now) },
           atualizadoPor: { stringValue: `Maestro Mobile (${sessaoUsuario.usuarioCpf || "WhatsApp"})` }
         }
-      };
+      });
+
+      let payloadPatch = montarBodyPatch(resEscala);
+      let payloadBytes = encoderUtf8.encode(JSON.stringify(payloadPatch)).length;
+      if (payloadBytes >= 850000 && !opcoesCripto.comprimirGzip) {
+        opcoesCripto = { comprimirGzip: true };
+        resEscala = await cifrarTextoAESMobile(escalaStr, chaveNuvem, opcoesCripto);
+        payloadPatch = montarBodyPatch(resEscala);
+        payloadBytes = encoderUtf8.encode(JSON.stringify(payloadPatch)).length;
+      }
+      if (payloadBytes >= 980000) {
+        throw new Error(`Tamanho do pacote (${Math.round(payloadBytes / 1024)} KB) excede o limite de 1 MB do Firestore. Exporte ou arquive meses antigos no Desktop.`);
+      }
 
       const respPatch = await fetch(urlPatch, {
         method: "PATCH",
@@ -1805,14 +2818,24 @@
 
   async function enviarPautasImportadasParaPlanilha() {
     if (!sessaoUsuario) return;
-    if (sessaoUsuario.role !== "Master" && sessaoUsuario.role !== "Editor") {
-      alert("🔒 Seu usuário não possui permissão de Editor ou Master para enviar pautas à planilha.");
+    if (!podeEnviarPautasNaSessao()) {
+      alert("🔒 Seu usuário possui perfil Somente Leitura e não pode enviar pautas à planilha.");
       return;
     }
 
     const selecionadas = pautasParaImportar.filter((p) => p._meta?.selecionada !== false);
     if (selecionadas.length === 0) {
       alert("⚠️ Selecione ao menos 1 pauta para enviar para a planilha.");
+      return;
+    }
+
+    const foraEscopo = selecionadas.filter((p) => !isVaraAutorizadaNaSessao(p.vara));
+    if (foraEscopo.length > 0) {
+      alert(
+        `🔒 Envio bloqueado por restrição de Vara:\n\n` +
+        `${foraEscopo.length} pauta(s) selecionada(s) aponta(m) para Vara(s) fora do seu escopo autorizado (${obterLabelEscopoVaras()}).\n\n` +
+        `Ajuste a Vara para sua unidade ou desmarque o(s) card(s) antes de enviar.`
+      );
       return;
     }
 
@@ -1898,9 +2921,14 @@
 
   async function reenviarFilaOffline() {
     if (!sessaoUsuario) return;
+    if (!podeEnviarPautasNaSessao()) {
+      alert("🔒 Seu usuário possui perfil Somente Leitura e não pode enviar pautas da fila.");
+      return;
+    }
     const subId = sessaoUsuario.subsecaoId;
-    const fila = carregarFilaOffline(subId);
+    const fila = carregarFilaOffline(subId).filter((p) => isVaraAutorizadaNaSessao(p.vara, sessaoUsuario, subId));
     if (fila.length === 0) {
+      salvarFilaOffline(subId, []);
       atualizarBannerFilaOffline();
       return;
     }
@@ -1935,6 +2963,7 @@
     atualizarLabelPeriodo();
     atualizarKpisDoMes();
     window.filtrarPautas();
+    renderizarAbaPorDia();
   }
 
   function atualizarLabelPeriodo() {
@@ -2037,11 +3066,387 @@
   }
 
   // =========================================================================
+  // 8B. VISUALIZAÇÃO DIÁRIA ("📅 POR DIA" — ESCALA DE PERITOS + PAUTA PJE)
+  // =========================================================================
+  const DIAS_SEMANA_PT = [
+    "Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira",
+    "Quinta-feira", "Sexta-feira", "Sábado"
+  ];
+
+  function somarDiasIso(isoStr, delta) {
+    const parts = String(isoStr || "").split("-");
+    if (parts.length !== 3) return obterHojeIsoLocal();
+    const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]) + Number(delta || 0));
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  function formatarCabecalhoDia(isoStr) {
+    const hojeIso = obterHojeIsoLocal();
+    const parts = String(isoStr || "").split("-");
+    if (parts.length !== 3) {
+      return { diaSemana: "Data", dataBr: "-", ehHoje: false };
+    }
+    const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    const diaSemana = DIAS_SEMANA_PT[d.getDay()] || "";
+    const dataBr = `${parts[2]}/${parts[1]}/${parts[0]}`;
+    const ehHoje = isoStr === hojeIso;
+    const prefixo = ehHoje ? "Hoje • " : (isoStr === somarDiasIso(hojeIso, 1) ? "Amanhã • " : "");
+    return {
+      diaSemana: `${prefixo}${diaSemana}`,
+      dataBr,
+      ehHoje
+    };
+  }
+
+  function selecionarDataPorDia(novaDataIso) {
+    if (!novaDataIso || !/^\d{4}-\d{2}-\d{2}$/.test(novaDataIso)) return;
+    dataSelecionadaPorDia = novaDataIso;
+    const parts = novaDataIso.split("-");
+    calDiaAno = Number(parts[0]);
+    calDiaMes = Number(parts[1]) - 1;
+    renderizarAbaPorDia();
+  }
+
+  function alterarDiaPorDia(delta) {
+    selecionarDataPorDia(somarDiasIso(dataSelecionadaPorDia, delta));
+  }
+
+  function alterarMesCalendarioDia(delta) {
+    calDiaMes += delta;
+    if (calDiaMes > 11) {
+      calDiaMes = 0;
+      calDiaAno++;
+    } else if (calDiaMes < 0) {
+      calDiaMes = 11;
+      calDiaAno--;
+    }
+    renderizarCalendarioPorDia();
+  }
+
+  function alternarCalendarioPorDia() {
+    calendarioDiaVisivel = !calendarioDiaVisivel;
+    const box = document.getElementById("boxCalendarioPorDia");
+    const btn = document.getElementById("btnToggleCalendarioDia");
+    if (box) box.style.display = calendarioDiaVisivel ? "block" : "none";
+    if (btn) btn.textContent = calendarioDiaVisivel ? "🗓️ Ocultar Cal." : "🗓️ Calendário";
+  }
+
+  function irParaProximoDiaComAtividade() {
+    const varaFiltro = document.getElementById("filtroVaraPorDia")?.value || "";
+    const datasSet = new Set();
+    (todasPautas || []).forEach((p) => {
+      if (!p.data) return;
+      if (varaFiltro && normalizarNumeroVara(p.vara) !== normalizarNumeroVara(varaFiltro)) return;
+      datasSet.add(p.data);
+    });
+    (todasPericiasPje || []).forEach((p) => {
+      if (!p.dataPericiaIso) return;
+      if (varaFiltro && (p.varaNum || extrairVaraNumeroPericiaMobile(p.vara)) !== normalizarNumeroVara(varaFiltro)) return;
+      datasSet.add(p.dataPericiaIso);
+    });
+
+    const ordenadas = Array.from(datasSet).sort();
+    if (ordenadas.length === 0) {
+      alert("Nenhuma pauta ou perícia encontrada para a subseção/vara selecionada.");
+      return;
+    }
+    const proxima = ordenadas.find((d) => d > dataSelecionadaPorDia) || ordenadas.find((d) => d >= dataSelecionadaPorDia) || ordenadas[0];
+    selecionarDataPorDia(proxima);
+  }
+
+  function construirMapaAtividadeMensal(ano, mes, varaFiltro = "") {
+    const prefix = `${ano}-${String(mes + 1).padStart(2, "0")}-`;
+    const mapa = {};
+    const vNormFiltro = varaFiltro ? normalizarNumeroVara(varaFiltro) : "";
+
+    (todasPautas || []).forEach((p) => {
+      if (!p.data || !p.data.startsWith(prefix)) return;
+      if (vNormFiltro && normalizarNumeroVara(p.vara) !== vNormFiltro) return;
+      if (!mapa[p.data]) mapa[p.data] = { escala: 0, pauta: 0 };
+      mapa[p.data].escala++;
+    });
+
+    (todasPericiasPje || []).forEach((p) => {
+      if (!p.dataPericiaIso || !p.dataPericiaIso.startsWith(prefix)) return;
+      if (vNormFiltro && (p.varaNum || extrairVaraNumeroPericiaMobile(p.vara)) !== vNormFiltro) return;
+      if (!mapa[p.dataPericiaIso]) mapa[p.dataPericiaIso] = { escala: 0, pauta: 0 };
+      mapa[p.dataPericiaIso].pauta++;
+    });
+
+    return mapa;
+  }
+
+  function renderizarCalendarioPorDia() {
+    const lblMes = document.getElementById("lblCalDiaMesAno");
+    const grid = document.getElementById("gridCalendarioPorDia");
+    if (!grid || !lblMes) return;
+
+    lblMes.textContent = `${MESES_NOMES[calDiaMes]} ${calDiaAno}`;
+    const varaFiltro = document.getElementById("filtroVaraPorDia")?.value || "";
+    const mapaAtiv = construirMapaAtividadeMensal(calDiaAno, calDiaMes, varaFiltro);
+
+    const primeiroDiaSemana = new Date(calDiaAno, calDiaMes, 1).getDay();
+    const totalDiasMes = new Date(calDiaAno, calDiaMes + 1, 0).getDate();
+    const hojeIso = obterHojeIsoLocal();
+    const cells = [];
+
+    for (let i = 0; i < primeiroDiaSemana; i++) {
+      cells.push('<div class="dia-cal-cell is-empty" aria-hidden="true"></div>');
+    }
+
+    for (let dia = 1; dia <= totalDiasMes; dia++) {
+      const iso = `${calDiaAno}-${String(calDiaMes + 1).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+      const dow = new Date(calDiaAno, calDiaMes, dia).getDay();
+      const ativ = mapaAtiv[iso];
+      const classes = ["dia-cal-cell"];
+      if (dow === 0 || dow === 6) classes.push("is-weekend");
+      if (iso === hojeIso) classes.push("is-today");
+      if (iso === dataSelecionadaPorDia) classes.push("is-selected");
+
+      const dots = [];
+      if (ativ && ativ.escala > 0) dots.push('<span class="dia-dot dia-dot-escala"></span>');
+      if (ativ && ativ.pauta > 0) dots.push('<span class="dia-dot dia-dot-pauta"></span>');
+
+      const tooltip = ativ
+        ? `${formatarDataBr(iso)}: ${ativ.escala} escala(s), ${ativ.pauta} perícia(s) PJe`
+        : formatarDataBr(iso);
+
+      cells.push(
+        `<button type="button" class="${classes.join(" ")}" data-date="${escapeHtml(iso)}" title="${escapeHtml(tooltip)}">` +
+          `<span>${dia}</span>` +
+          `<span class="dia-cal-dots">${dots.join("")}</span>` +
+        `</button>`
+      );
+    }
+
+    grid.innerHTML = cells.join("");
+  }
+
+  function obterBadgeStatusAtendimentoMobile(p) {
+    const st = String(p?.statusAtendimento || "").toUpperCase();
+    if (st === "CONCLUIDO") return { label: "✅ Concluído", cls: "st-concluido" };
+    if (st === "EM_ATENDIMENTO") return { label: "🩺 Em Atendimento", cls: "st-atendimento" };
+    if (st === "CHAMADO") return { label: "📢 Chamado", cls: "st-chamado" };
+    if (st === "AUSENTE_CHAMADO") return { label: "❌ Ausente", cls: "st-ausente" };
+    if (st === "PRESENTE" || p?.presencaConfirmada) return { label: "🟢 Presente", cls: "st-presente" };
+    return { label: "⏳ Aguardando", cls: "st-aguardando" };
+  }
+
+  function renderizarAbaPorDia() {
+    if (!sessaoUsuario) return;
+
+    const cab = formatarCabecalhoDia(dataSelecionadaPorDia);
+    const elTitulo = document.getElementById("lblDiaSelecionadoTitulo");
+    const elSub = document.getElementById("lblDiaSelecionadoSubtitulo");
+    const elInput = document.getElementById("inputDataPorDia");
+    if (elTitulo) elTitulo.textContent = cab.diaSemana;
+    if (elSub) elSub.textContent = cab.dataBr;
+    if (elInput && elInput.value !== dataSelecionadaPorDia) elInput.value = dataSelecionadaPorDia;
+
+    renderizarCalendarioPorDia();
+
+    const txtBusca = removerAcentosLowerMobile(document.getElementById("filtroTextoPorDia")?.value || "");
+    const btnLimpar = document.getElementById("btnLimparBuscaPorDia");
+    if (btnLimpar) btnLimpar.style.display = txtBusca ? "block" : "none";
+
+    const varaFiltro = document.getElementById("filtroVaraPorDia")?.value || "";
+    const vNormFiltro = varaFiltro ? normalizarNumeroVara(varaFiltro) : "";
+
+    const escalaDoDia = (todasPautas || []).filter((p) => {
+      if (p.data !== dataSelecionadaPorDia) return false;
+      if (vNormFiltro && normalizarNumeroVara(p.vara) !== vNormFiltro) return false;
+      if (txtBusca) {
+        const hay = removerAcentosLowerMobile(`${p.peritoNome} ${p.especialidade} ${p.vara} ${p.local} ${p.endereco || ""} ${p.observacoes || ""}`);
+        if (!hay.includes(txtBusca)) return false;
+      }
+      return true;
+    }).sort((a, b) => (a.horaInicio || "08:00").localeCompare(b.horaInicio || "08:00"));
+
+    const pautaDoDia = (todasPericiasPje || []).filter((p) => {
+      if (p.dataPericiaIso !== dataSelecionadaPorDia) return false;
+      if (vNormFiltro && (p.varaNum || extrairVaraNumeroPericiaMobile(p.vara)) !== vNormFiltro) return false;
+      if (txtBusca) {
+        const hay = removerAcentosLowerMobile(`${p.perito} ${p.periciado} ${p.processo} ${p.especialidade} ${p.vara} ${p.sala || ""}`);
+        if (!hay.includes(txtBusca)) return false;
+      }
+      return true;
+    }).sort((a, b) => {
+      const cmpHora = (a.horaPericia || "99:99").localeCompare(b.horaPericia || "99:99");
+      if (cmpHora !== 0) return cmpHora;
+      return (a.perito || "").localeCompare(b.perito || "", "pt-BR");
+    });
+
+    // KPIs e contadores do dia
+    const totalVagasEscala = escalaDoDia.reduce((acc, p) => acc + (Number(p.vagas !== undefined ? p.vagas : p.quantidade) || 0), 0);
+    const totalPresentes = pautaDoDia.filter((p) => p.presencaConfirmada || ["PRESENTE", "CHAMADO", "EM_ATENDIMENTO", "CONCLUIDO"].includes(p.statusAtendimento)).length;
+    const totalChamados = pautaDoDia.filter((p) => ["CHAMADO", "EM_ATENDIMENTO", "CONCLUIDO"].includes(p.statusAtendimento)).length;
+    let qtdPredio = 0;
+    let qtdFora = 0;
+    escalaDoDia.forEach((p) => {
+      if (Parser && Parser.ehLocalFora(p.local)) qtdFora++;
+      else qtdPredio++;
+    });
+
+    const elKpiEscala = document.getElementById("diaKpiEscala");
+    const elKpiPauta = document.getElementById("diaKpiPautaPje");
+    const elKpiPres = document.getElementById("diaKpiPresentes");
+    const elKpiLoc = document.getElementById("diaKpiLocais");
+    if (elKpiEscala) elKpiEscala.textContent = `${escalaDoDia.length} bl. • ${totalVagasEscala}v`;
+    if (elKpiPauta) elKpiPauta.textContent = `${pautaDoDia.length} perícia(s)`;
+    if (elKpiPres) elKpiPres.textContent = `${totalPresentes} / ${totalChamados}`;
+    if (elKpiLoc) elKpiLoc.textContent = escalaDoDia.length > 0 ? `🏛️ ${qtdPredio} • 🏥 ${qtdFora}` : "-";
+
+    const elPillEsc = document.getElementById("diaCountEscalaPill");
+    const elPillPauta = document.getElementById("diaCountPautaPill");
+    const elBadgeEsc = document.getElementById("lblCountEscalaDia");
+    const elBadgePauta = document.getElementById("lblCountPautaPjeDia");
+    if (elPillEsc) elPillEsc.textContent = String(escalaDoDia.length);
+    if (elPillPauta) elPillPauta.textContent = String(pautaDoDia.length);
+    if (elBadgeEsc) elBadgeEsc.textContent = `${escalaDoDia.length} bloco(s)`;
+    if (elBadgePauta) elBadgePauta.textContent = `${pautaDoDia.length} perícia(s)`;
+
+    const secEscala = document.getElementById("secaoEscalaDoDia");
+    const secPauta = document.getElementById("secaoPautaPjeDoDia");
+    if (secEscala) secEscala.style.display = (modoVisualizacaoDia === "pauta") ? "none" : "block";
+    if (secPauta) secPauta.style.display = (modoVisualizacaoDia === "escala") ? "none" : "block";
+
+    // Mapa cruzado PJe por perito neste dia
+    const contagemPjePorPerito = {};
+    pautaDoDia.forEach((p) => {
+      const k = removerAcentosLowerMobile(p.perito);
+      if (k) contagemPjePorPerito[k] = (contagemPjePorPerito[k] || 0) + 1;
+    });
+
+    // Renderizar Escala do Dia
+    const containerEscala = document.getElementById("listaEscalaDoDia");
+    if (containerEscala) {
+      if (escalaDoDia.length === 0) {
+        containerEscala.innerHTML = `
+          <div class="section-card" style="text-align: center; padding: 18px;">
+            <p class="text-sm text-muted" style="margin-bottom: 10px;">Nenhuma escala de perito cadastrada para ${escapeHtml(cab.dataBr)}.</p>
+            <button type="button" class="btn btn-outline btn-sm" data-action="proximo-dia-atividade">⏭️ Ir para próximo dia com pauta</button>
+          </div>
+        `;
+      } else {
+        containerEscala.innerHTML = escalaDoDia.map((p) => {
+          const isMarcado = p.situacao === "Marcado";
+          const statusClass = isMarcado ? "status-marcado" : "status-pendente";
+          const badgeClass = isMarcado ? "status-badge-marcado" : "status-badge-pendente";
+          const vagasNum = p.vagas !== undefined ? p.vagas : p.quantidade;
+          const horaTxt = p.horaInicio || p.hora || "08:00";
+          const hInt = parseInt(horaTxt.split(":")[0], 10);
+          const turnoBadge = !isNaN(hInt)
+            ? `<span class="dia-turno-badge">${hInt < 12 ? "☀️ Manhã" : "🌙 Tarde"}</span>`
+            : "";
+          const qtdPje = contagemPjePorPerito[removerAcentosLowerMobile(p.peritoNome)] || 0;
+          const reconcilBadge = qtdPje > 0
+            ? `<span class="dia-escala-reconcil-badge">📋 ${qtdPje} no PJe</span>`
+            : "";
+          const obsTxt = p.observacoes || p.observacao || "";
+
+          return `
+            <div class="pauta-card ${statusClass}">
+              <div class="pauta-header">
+                <div class="pauta-date-badge">
+                  <span>⏰ ${escapeHtml(horaTxt)}${p.horaTermino ? ` – ${escapeHtml(p.horaTermino)}` : ""}</span>
+                  ${turnoBadge}
+                </div>
+                <span class="status-badge ${badgeClass}">${escapeHtml(p.situacao)}</span>
+              </div>
+              <div class="pauta-perito">${escapeHtml(p.peritoNome)} ${reconcilBadge}</div>
+              <div class="pauta-esp">${escapeHtml(p.especialidade || "-")}</div>
+              <div class="pauta-details-grid">
+                <div class="detail-item"><span>Vara:</span><strong>${escapeHtml(p.vara)}ª Federal</strong></div>
+                <div class="detail-item"><span>Vagas:</span><strong>${escapeHtml(vagasNum)} perícias</strong></div>
+                <div class="detail-item"><span>Local:</span><strong>${escapeHtml(p.local || "JF")}</strong></div>
+              </div>
+              ${p.endereco ? `<div class="pauta-obs" style="margin-bottom:4px;">📍 ${escapeHtml(p.endereco)}</div>` : ""}
+              ${obsTxt ? `<div class="pauta-obs">💡 ${escapeHtml(obsTxt)}</div>` : ""}
+            </div>
+          `;
+        }).join("");
+      }
+    }
+
+    // Renderizar Pauta PJe do Dia agrupada por Perito
+    const containerPauta = document.getElementById("listaPautaPjeDoDia");
+    if (containerPauta) {
+      if (pautaDoDia.length === 0) {
+        const msgExtra = todasPericiasPje.length === 0
+          ? "Sincronize a pauta na aba \"Chamada de Perícias\" ou \"Pautas Marcadas\" no Maestro Desktop com a nuvem ativa para visualizar os periciandos no celular."
+          : `Nenhuma perícia do PJe registrada para ${escapeHtml(cab.dataBr)}.`;
+        containerPauta.innerHTML = `
+          <div class="section-card" style="text-align: center; padding: 18px;">
+            <p class="text-sm text-muted" style="margin-bottom: 10px;">${msgExtra}</p>
+            ${todasPericiasPje.length > 0 ? '<button type="button" class="btn btn-outline btn-sm" data-action="proximo-dia-atividade">⏭️ Ir para próximo dia com pauta</button>' : ""}
+          </div>
+        `;
+      } else {
+        const gruposMap = new Map();
+        pautaDoDia.forEach((p) => {
+          const chave = p.perito || "Perito não informado";
+          if (!gruposMap.has(chave)) gruposMap.set(chave, []);
+          gruposMap.get(chave).push(p);
+        });
+
+        containerPauta.innerHTML = Array.from(gruposMap.entries()).map(([nomePerito, itens]) => {
+          const salaGrupo = itens.find((x) => x.sala)?.sala || "";
+          const presGrupo = itens.filter((x) => x.presencaConfirmada || ["PRESENTE", "CHAMADO", "EM_ATENDIMENTO", "CONCLUIDO"].includes(x.statusAtendimento)).length;
+
+          const rowsHtml = itens.map((item) => {
+            const st = obterBadgeStatusAtendimentoMobile(item);
+            const urgBadge = item.urgenciaMedica ? '<span class="dia-status-pill" style="background:rgba(239,68,68,0.16);color:#DC2626;">🚨 Prioridade</span>' : "";
+            return `
+              <div class="dia-pericia-row ${item.urgenciaMedica ? "is-urgencia" : ""}">
+                <div class="dia-pericia-top">
+                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                    <span class="dia-hora-pill">${escapeHtml(item.horaPericia || "--:--")}</span>
+                    ${item.sala ? `<span class="dia-turno-badge">🚪 ${escapeHtml(item.sala)}</span>` : ""}
+                    ${urgBadge}
+                  </div>
+                  <span class="dia-status-pill ${st.cls}">${escapeHtml(st.label)}</span>
+                </div>
+                <div class="dia-periciando-nome">${escapeHtml(item.periciado)}</div>
+                <div class="dia-proc-row">
+                  <span class="dia-proc-num">📄 ${escapeHtml(item.processo)}</span>
+                  <button type="button" class="btn-copy-proc" data-copy-proc="${escapeHtml(item.processo)}">📋 Copiar</button>
+                </div>
+                <div class="dia-pericia-meta">
+                  ${item.vara ? `<span>⚖️ ${escapeHtml(item.vara)}</span>` : ""}
+                  ${item.especialidade ? `<span>• 🩺 ${escapeHtml(item.especialidade)}</span>` : ""}
+                  ${item.horarioCheckin ? `<span>• 🕒 Check-in ${escapeHtml(item.horarioCheckin)}</span>` : ""}
+                </div>
+              </div>
+            `;
+          }).join("");
+
+          return `
+            <div class="dia-pauta-group">
+              <div class="dia-pauta-group-head">
+                <div>
+                  <div class="dia-pauta-group-title">👨‍⚕️ ${escapeHtml(nomePerito)}</div>
+                  <div class="dia-pauta-group-sub">
+                    ${itens.length} perícia(s)${presGrupo > 0 ? ` • ${presGrupo} presente(s)` : ""}${salaGrupo ? ` • ${escapeHtml(salaGrupo)}` : ""}
+                  </div>
+                </div>
+              </div>
+              <div class="dia-pauta-items">${rowsHtml}</div>
+            </div>
+          `;
+        }).join("");
+      }
+    }
+  }
+
+  // =========================================================================
   // 9. LISTAGEM & FILTROS DAS PAUTAS
   // =========================================================================
   window.setFiltroSituacao = function (filtro, elem) {
     filtroSituacaoAtivo = filtro;
-    document.querySelectorAll(".filter-pills .pill").forEach((p) => p.classList.remove("active"));
+    document.querySelectorAll("#tabPautas .filter-pills .pill").forEach((p) => p.classList.remove("active"));
     if (elem) elem.classList.add("active");
     window.filtrarPautas();
   };
@@ -2122,7 +3527,7 @@
       card.className = `pauta-card ${statusClass}`;
       card.innerHTML = `
         <div class="pauta-header">
-          <div class="pauta-date-badge">
+          <div class="pauta-date-badge${p.data ? " is-clickable" : ""}" ${p.data ? `data-abrir-dia="${escapeHtml(p.data)}" title="Ver Escala e Pauta PJe deste dia"` : ""}>
             <span>📅</span>
             <span>${escapeHtml(dataFmt)} • ${escapeHtml(horaTxt)}</span>
           </div>
@@ -2166,6 +3571,11 @@
   // =========================================================================
   window.gerarRelatorioPdf = function (tipo) {
     const subInfo = SUBSECOES_MAP[sessaoUsuario.subsecaoId] || { nome: sessaoUsuario.subsecaoNome };
+    const varasAuth = resolverVarasAutorizadasSubsecao(sessaoUsuario, sessaoUsuario.subsecaoId);
+    const varasSub = subInfo.varas || [];
+    const escopoTitulo = (sessaoUsuario.role !== "Master" && varasAuth.length < varasSub.length)
+      ? `${subInfo.nome} • ${varasAuth.map((v) => `${v}ª VF`).join(", ")}`
+      : subInfo.nome;
     const lista = tipo === "mes" ? obterPautasDoMesAtivo() : todasPautas;
     const tituloPeriodo = tipo === "mes" ? `${MESES_NOMES[mesAtivo]} de ${anoAtivo}` : "Todas as Pautas Cadastradas";
 
@@ -2210,7 +3620,7 @@
           RELATÓRIO OFICIAL DE PAUTAS E PERÍCIAS JUDICIAIS
         </div>
         <div class="print-subtitle" style="font-weight: 600; color: #0284C7;">
-          Subseção Judiciária de ${escapeHtml(subInfo.nome)} • Maestro PJe
+          Subseção Judiciária de ${escapeHtml(escopoTitulo)} • Maestro PJe
         </div>
         <div style="font-size: 11px; color: #64748B; margin-top: 4px;">
           Período: <strong>${escapeHtml(tituloPeriodo)}</strong> • Emitido em: ${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR")}
@@ -2242,7 +3652,7 @@
       </table>
 
       <div style="margin-top: 24px; text-align: right; font-size: 10px; color: #64748B;">
-        Documento gerado pelo Maestro PJe Mobile • Usuário: ${escapeHtml(sessaoUsuario.usuarioCpf)} (Escopo: ${escapeHtml(subInfo.nome)})
+        Documento gerado pelo Maestro PJe Mobile • Usuário: ${escapeHtml(sessaoUsuario.usuarioNome || mascararCpfMobile(sessaoUsuario.usuarioCpf))} (Escopo: ${escapeHtml(escopoTitulo)})
       </div>
     `;
 
@@ -2291,6 +3701,11 @@
 
   function gerarTextoResumoWhatsApp() {
     const subInfo = SUBSECOES_MAP[sessaoUsuario.subsecaoId] || { nome: sessaoUsuario.subsecaoNome };
+    const varasAuth = resolverVarasAutorizadasSubsecao(sessaoUsuario, sessaoUsuario.subsecaoId);
+    const varasSub = subInfo.varas || [];
+    const escopoTxt = (sessaoUsuario.role !== "Master" && varasAuth.length < varasSub.length)
+      ? `${subInfo.nome} (${varasAuth.map((v) => `${v}ª VF`).join(", ")})`
+      : subInfo.nome;
     const lista = obterPautasDoMesAtivo();
 
     let totalVagas = 0;
@@ -2314,7 +3729,7 @@
     const taxa = totalVagas > 0 ? Math.round((marcadas / totalVagas) * 100) : 0;
 
     let txt = `⚖️ *MAESTRO PJE - RESUMO DE PAUTAS*\n`;
-    txt += `📍 *Subseção:* ${subInfo.nome}\n`;
+    txt += `📍 *Subseção:* ${escopoTxt}\n`;
     txt += `📅 *Período:* ${MESES_NOMES[mesAtivo]}/${anoAtivo}\n\n`;
     txt += `📊 *NÚMEROS GERAIS:*\n`;
     txt += `• *Total de Vagas:* ${totalVagas} perícias\n`;
@@ -2351,6 +3766,10 @@
   // 11. NAVEGAÇÃO DE ABAS
   // =========================================================================
   window.trocarAba = function (tabId) {
+    if (tabId === "tabWhatsapp" && !podeEnviarPautasNaSessao()) {
+      alert("👁️ Seu perfil é Somente Leitura e não possui permissão para importar pautas.");
+      return;
+    }
     document.querySelectorAll(".tab-content").forEach((c) => c.classList.remove("active"));
     document.querySelectorAll(".main-tabs .tab-btn").forEach((b) => b.classList.remove("active"));
 
@@ -2359,10 +3778,18 @@
 
     if (tab) tab.classList.add("active");
     if (btn) btn.classList.add("active");
+    if (tabId === "tabPorDia") renderizarAbaPorDia();
   };
 
   // Service Worker apenas em origem HTTP/HTTPS (PWA Android; evita aviso em chrome-extension://)
   if ("serviceWorker" in navigator && (window.location.protocol === "https:" || window.location.protocol === "http:")) {
+    let swRefreshing = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (swRefreshing) return;
+      swRefreshing = true;
+      window.location.reload();
+    });
+
     window.addEventListener("load", () => {
       navigator.serviceWorker.register("./sw.js")
         .then((reg) => console.log("[Maestro Mobile] Service Worker registrado:", reg.scope))

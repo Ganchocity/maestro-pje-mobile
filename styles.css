@@ -350,6 +350,35 @@ input, textarea, select {
   color: #FFFFFF;
 }
 
+.header-subsecao-select {
+  background: rgba(255, 255, 255, 0.12);
+  color: #FFFFFF;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  outline: none;
+  cursor: pointer;
+  max-width: 185px;
+}
+
+.header-subsecao-select option {
+  background: #0F172A;
+  color: #FFFFFF;
+}
+
+.form-control:disabled,
+.form-select-sm:disabled,
+.wpp-field select:disabled {
+  opacity: 0.85;
+  cursor: not-allowed;
+  background: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary-dark);
+  font-weight: 700;
+}
+
 .sub-dot {
   width: 8px;
   height: 8px;
@@ -422,6 +451,25 @@ input, textarea, select {
   background: rgba(16, 185, 129, 0.15);
   color: var(--secondary-dark);
   border: 1px solid rgba(16, 185, 129, 0.3);
+  white-space: nowrap;
+}
+
+.badge-role-master {
+  background: rgba(245, 158, 11, 0.18);
+  color: #B45309;
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.badge-role-leitor {
+  background: rgba(2, 132, 199, 0.14);
+  color: var(--primary-dark);
+  border-color: rgba(2, 132, 199, 0.35);
+}
+
+.badge-role-restrito {
+  background: rgba(100, 116, 139, 0.16);
+  color: var(--slate-600);
+  border-color: rgba(100, 116, 139, 0.35);
 }
 
 /* ==========================================================
@@ -443,15 +491,17 @@ input, textarea, select {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  padding: 9px 4px;
+  padding: 8px 2px;
   background: transparent;
   border: none;
   border-bottom: 3px solid transparent;
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 10.5px;
   font-weight: 700;
   cursor: pointer;
   transition: all 0.2s;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .tab-btn.active {
@@ -1256,6 +1306,431 @@ input, textarea, select {
 }
 
 /* ==========================================================
+   ABA POR DIA (NAVEGAÇÃO, MINI CALENDÁRIO E PAUTA PJE)
+   ========================================================== */
+.dia-nav-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.dia-nav-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dia-nav-center {
+  flex: 1;
+  text-align: center;
+  min-width: 0;
+}
+
+.dia-nav-weekday {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-main);
+  text-transform: capitalize;
+  line-height: 1.25;
+}
+
+.dia-nav-date-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.dia-nav-date-text {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.dia-date-input {
+  padding: 3px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--slate-100);
+  color: var(--text-main);
+  font-family: inherit;
+  max-width: 138px;
+}
+
+.dia-quick-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.dia-quick-row .btn {
+  flex: 1;
+  padding: 7px 6px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.btn-circle-sm {
+  width: 30px;
+  height: 30px;
+  font-size: 12px;
+}
+
+.dia-cal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.dia-cal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.dia-cal-header strong {
+  font-size: 13.5px;
+  color: var(--text-main);
+}
+
+.dia-cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.dia-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.dia-cal-cell {
+  border: 1px solid transparent;
+  background: var(--slate-100);
+  color: var(--text-main);
+  border-radius: 8px;
+  padding: 5px 2px 4px;
+  min-height: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.dia-cal-cell.is-empty {
+  background: transparent;
+  cursor: default;
+  pointer-events: none;
+}
+
+.dia-cal-cell.is-weekend {
+  color: var(--text-muted);
+  opacity: 0.78;
+}
+
+.dia-cal-cell.is-today {
+  border-color: var(--primary);
+}
+
+.dia-cal-cell.is-selected {
+  background: var(--primary);
+  color: #FFFFFF;
+  border-color: var(--primary-dark);
+  opacity: 1;
+}
+
+.dia-cal-dots {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-height: 7px;
+}
+
+.dia-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.dia-dot-escala {
+  background: var(--primary);
+}
+
+.dia-dot-pauta {
+  background: var(--secondary);
+}
+
+.dia-cal-cell.is-selected .dia-dot-escala {
+  background: #BAE6FD;
+}
+
+.dia-cal-cell.is-selected .dia-dot-pauta {
+  background: #A7F3D0;
+}
+
+.dia-cal-legend {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.dia-cal-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dia-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.dia-kpi-chip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 11px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dia-kpi-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.dia-kpi-val {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dia-view-pills {
+  margin-bottom: 10px;
+}
+
+.dia-filter-inputs {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 420px) {
+  .dia-filter-inputs {
+    grid-template-columns: 1fr;
+  }
+}
+
+.dia-section-block {
+  margin-bottom: 18px;
+}
+
+.dia-section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 2px 10px;
+}
+
+.dia-section-title-row h4 {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.dia-escala-reconcil-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+  background: rgba(2, 132, 199, 0.14);
+  color: var(--primary);
+}
+
+.dia-turno-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+  background: var(--slate-100);
+  color: var(--text-main);
+  margin-left: 4px;
+}
+
+.dia-pauta-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dia-pauta-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.dia-pauta-group-head {
+  background: var(--slate-100);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dia-pauta-group-title {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.dia-pauta-group-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.dia-pauta-items {
+  display: flex;
+  flex-direction: column;
+}
+
+.dia-pericia-row {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dia-pericia-row:last-child {
+  border-bottom: none;
+}
+
+.dia-pericia-row.is-urgencia {
+  border-left: 4px solid var(--danger);
+}
+
+.dia-pericia-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dia-hora-pill {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--primary);
+  background: var(--primary-light);
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.dia-status-pill {
+  font-size: 10.5px;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.st-aguardando { background: var(--slate-100); color: var(--text-muted); }
+.st-presente { background: rgba(16, 185, 129, 0.16); color: var(--secondary-dark); }
+.st-chamado { background: rgba(245, 158, 11, 0.18); color: var(--warning-dark); }
+.st-atendimento { background: rgba(2, 132, 199, 0.16); color: var(--primary); }
+.st-concluido { background: rgba(5, 150, 105, 0.2); color: var(--secondary-dark); }
+.st-ausente { background: rgba(239, 68, 68, 0.16); color: var(--danger); }
+
+.dia-periciando-nome {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.dia-proc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dia-proc-num {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.btn-copy-proc {
+  border: 1px solid var(--border);
+  background: var(--slate-100);
+  color: var(--text-main);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dia-pericia-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.pauta-date-badge.is-clickable {
+  cursor: pointer;
+  text-decoration: underline dotted var(--primary);
+}
+
+/* ==========================================================
    ESTILOS DE IMPRESSÃO / PDF OFICIAL
    ========================================================== */
 @media print {
@@ -1264,7 +1739,7 @@ input, textarea, select {
     color: #000000 !important;
   }
 
-  .app-header, .user-status-strip, .main-tabs, .preview-actions, .quick-actions, .filters-card, .wpp-offline-banner, #tabWhatsapp {
+  .app-header, .user-status-strip, .main-tabs, .preview-actions, .quick-actions, .filters-card, .wpp-offline-banner, #tabWhatsapp, #tabPorDia {
     display: none !important;
   }
 

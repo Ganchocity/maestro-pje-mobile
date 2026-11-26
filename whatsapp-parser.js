@@ -140,7 +140,7 @@
     const l = normLower(localStr);
     if (l.includes("telepericia")) {
       if (
-        (l.includes("predio") || l.includes("justica") || l.includes("no predio") || l.includes("sala jf") || l.includes("forum") || l.includes("sede")) &&
+        (l.includes("predio") || l.includes("justica") || l.includes("forum") || l.includes("sala jf") || l.includes("sede")) &&
         !l.includes("fora") &&
         !l.includes("remot") &&
         !l.includes("extern")
@@ -179,13 +179,72 @@
     return !ocupaSalasNoPredio(localStr);
   }
 
-  function verificarEhFeriado(dataIso, listaFeriados = FERIADOS_PADRAO_JFCE) {
+  function calcularPascoaFallback(ano) {
+    const y = parseInt(ano, 10);
+    if (!Number.isFinite(y) || y < 1583) return null;
+    const a = y % 19;
+    const b = Math.floor(y / 100);
+    const c = y % 100;
+    const d = Math.floor(b / 4);
+    const e = b % 4;
+    const f = Math.floor((b + 8) / 25);
+    const g = Math.floor((b - f + 1) / 3);
+    const h = (19 * a + b - d - g + 15) % 30;
+    const i = Math.floor(c / 4);
+    const k = c % 4;
+    const l = (32 + 2 * e + 2 * i - h - k) % 7;
+    const m = Math.floor((a + 11 * h + 22 * l) / 451);
+    const mes = Math.floor((h + l - 7 * m + 114) / 31);
+    const dia = ((h + l - 7 * m + 114) % 31) + 1;
+    return { ano: y, mes, dia };
+  }
+
+  function verificarEhFeriado(dataIso, listaFeriados = FERIADOS_PADRAO_JFCE, subsecaoId = "") {
     if (!dataIso) return null;
+    if (typeof root !== "undefined" && root.MaestroDomainRules && typeof root.MaestroDomainRules.verificarEhFeriado === "function") {
+      const custom = Array.isArray(listaFeriados) && listaFeriados !== FERIADOS_PADRAO_JFCE ? listaFeriados : [];
+      return root.MaestroDomainRules.verificarEhFeriado(dataIso, { subsecaoId, feriadosCustom: custom });
+    }
+    const limpo = String(dataIso).trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(limpo)) return null;
+    const ano = parseInt(limpo.slice(0, 4), 10);
+    const mes = parseInt(limpo.slice(5, 7), 10);
+    const dia = parseInt(limpo.slice(8, 10), 10);
+
+    // Recesso Forense Integral (Art. 62, I, Lei 5.010/66: 20/12 a 06/01)
+    if ((mes === 12 && dia >= 20) || (mes === 1 && dia <= 6)) {
+      if (mes === 1 && dia === 1) return { data: limpo, nome: "Confraternização Universal (Ano Novo)", tipo: "Nacional" };
+      if (mes === 12 && dia === 25) return { data: limpo, nome: "Natal", tipo: "Nacional" };
+      return { data: limpo, nome: "Recesso Judiciário Forense (Lei 5.010/66)", tipo: "Recesso" };
+    }
+
+    // Feriados móveis dinâmicos pela Páscoa
+    const pascoa = calcularPascoaFallback(ano);
+    if (pascoa) {
+      const moveisOffsets = [
+        { offset: -48, nome: "Carnaval (Segunda-feira)" },
+        { offset: -47, nome: "Carnaval (Terça-feira)" },
+        { offset: -46, nome: "Quarta-feira de Cinzas" },
+        { offset: -4, nome: "Semana Santa (Quarta-feira)" },
+        { offset: -3, nome: "Semana Santa (Quinta-feira Santa)" },
+        { offset: -2, nome: "Sexta-feira da Paixão" },
+        { offset: 60, nome: "Corpus Christi" }
+      ];
+      for (const mv of moveisOffsets) {
+        const dt = new Date(pascoa.ano, pascoa.mes - 1, pascoa.dia + mv.offset, 12, 0, 0);
+        const mvIso = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+        if (mvIso === limpo) return { data: mvIso, nome: mv.nome, tipo: "Forense" };
+      }
+    }
+
+    const subNorm = removerAcentos(subsecaoId).toLowerCase().trim();
     const item = (listaFeriados || FERIADOS_PADRAO_JFCE).find((f) => {
       if (!f || !f.data) return false;
-      if (f.data === dataIso) return true;
-      if (f.recorrente && dataIso.length === 10 && f.data.length === 10) {
-        return dataIso.slice(5) === f.data.slice(5);
+      // Escopo municipal: 07-05 (Aniversário de Sobral) só se subsecaoId vazio ou sobral
+      if (f.data.slice(5, 10) === "07-05" && subNorm && subNorm !== "sobral") return false;
+      if (f.data === limpo) return true;
+      if (f.recorrente && f.data.length === 10) {
+        return limpo.slice(5) === f.data.slice(5);
       }
       return false;
     });
@@ -204,17 +263,35 @@
     return `${String(endH).padStart(2, "0")}:${String(endM).padStart(2, "0")}`;
   }
 
-  function calcularDataLimite8DiasUteis(dataStr, diasUteis = 8, listaFeriados = FERIADOS_PADRAO_JFCE) {
+  function somarMinutosHora(horaStr, deltaMin) {
+    if (!horaStr || !String(horaStr).includes(":")) return "";
+    const partes = String(horaStr).split(":");
+    const h = parseInt(partes[0], 10);
+    const m = parseInt(partes[1], 10);
+    if (!Number.isFinite(h) || !Number.isFinite(m)) return "";
+    const total = Math.max(0, Math.min(23 * 60 + 59, h * 60 + m + (parseInt(deltaMin, 10) || 0)));
+    const outH = Math.floor(total / 60);
+    const outM = total % 60;
+    return `${String(outH).padStart(2, "0")}:${String(outM).padStart(2, "0")}`;
+  }
+
+  function calcularDataLimite8DiasUteis(dataStr, diasUteis = 8, listaFeriados = FERIADOS_PADRAO_JFCE, subsecaoId = "") {
+    if (typeof root !== "undefined" && root.MaestroDomainRules && typeof root.MaestroDomainRules.calcularDataLimiteDiasUteis === "function") {
+      const custom = Array.isArray(listaFeriados) && listaFeriados !== FERIADOS_PADRAO_JFCE ? listaFeriados : [];
+      return root.MaestroDomainRules.calcularDataLimiteDiasUteis(dataStr, diasUteis, { subsecaoId, feriadosCustom: custom });
+    }
     if (!dataStr || !/^\d{4}-\d{2}-\d{2}$/.test(dataStr)) return "";
     const [ano, mes, dia] = dataStr.split("-").map(Number);
     const d = new Date(ano, mes - 1, dia, 12, 0, 0);
     if (isNaN(d.getTime())) return "";
     let contagem = 0;
-    while (contagem < diasUteis) {
+    let guard = 0;
+    while (contagem < diasUteis && guard < 400) {
+      guard++;
       d.setDate(d.getDate() - 1);
       const dw = d.getDay();
       const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      if (dw !== 0 && dw !== 6 && !verificarEhFeriado(iso, listaFeriados)) {
+      if (dw !== 0 && dw !== 6 && !verificarEhFeriado(iso, listaFeriados, subsecaoId)) {
         contagem++;
       }
     }
@@ -231,21 +308,38 @@
   }
 
   function classificarCategoriaPericia(nomePerito, especialidade) {
-    const txt = normLower(`${nomePerito || ""} ${especialidade || ""}`);
-    if (txt.includes("social") || txt.includes("assist") || txt.includes("loas")) return "social";
-    if (txt.includes("engenharia") || txt.includes("contabil") || txt.includes("grafotec")) return "outras";
+    if (typeof root !== "undefined" && root.MaestroDomainRules && typeof root.MaestroDomainRules.analisarCategoriaPericia === "function") {
+      const res = root.MaestroDomainRules.analisarCategoriaPericia(especialidade || "", nomePerito || "");
+      return res.categoriaBI === "medica" ? "medica" : (res.id === "social" ? "social" : "outras");
+    }
+    const raw = normLower(`${nomePerito || ""} ${especialidade || ""}`);
+    const semNegacoes = raw
+      .replace(/(?:nao|n\.?)\s*(?:marca(?:r)?|atende|realiza|faz)\s*(?:processos?\s*(?:de\s*)?)?(?:bpc[\s\/]*)?loas/gi, " ")
+      .replace(/(?:sem|exceto|menos)\s+(?:processos?\s*(?:de\s*)?)?(?:bpc[\s\/]*)?loas/gi, " ")
+      .replace(/\bsem\s+assistencia\s+social\b/gi, " ");
+    if (/\b(?:assistente\s+social|assistencia\s+social|pericia\s+social|servico\s+social|bpc)\b/i.test(semNegacoes) || /\bloas\b/i.test(semNegacoes) || /\bsocial\b/i.test(normLower(especialidade || ""))) {
+      return "social";
+    }
+    if (raw.includes("engenharia") || raw.includes("contabil") || raw.includes("grafotec")) return "outras";
     return "medica";
   }
 
   function obterOcupacaoSalasTurno(dataIso, turno, pautasLista = [], ignorarId = null) {
     if (!dataIso) return { totalSalas: 0, peritos: [] };
+    if (typeof root !== "undefined" && root.MaestroDomainRules && typeof root.MaestroDomainRules.obterOcupacaoSalasTurno === "function") {
+      const filtrada = ignorarId ? (pautasLista || []).filter((p) => p && p.id !== ignorarId) : pautasLista;
+      const r = root.MaestroDomainRules.obterOcupacaoSalasTurno(filtrada, dataIso, turno);
+      return { totalSalas: r.salasUsadas, peritos: r.peritos };
+    }
     const peritosMap = new Map();
     (pautasLista || []).forEach((p) => {
       if (!p || (ignorarId && p.id === ignorarId)) return;
+      const statusNorm = normLower(`${p.status || ""} ${p.situacao || ""}`);
+      if (p.cancelada === true || /cancelad|redesignad|suspens|desmarcad|excluid/i.test(statusNorm)) return;
       if (p.data !== dataIso) return;
       if (!ocupaSalasNoPredio(p.local)) return;
       const h = parseInt((p.horaInicio || p.hora || "08:00").split(":")[0], 10);
-      const tPauta = h < 12 ? "manha" : "tarde";
+      const tPauta = h < 12 ? "manha" : (h < 18 ? "tarde" : "noite");
       if (tPauta !== turno) return;
       const chave = normLower(p.peritoNome || "");
       if (chave && !peritosMap.has(chave)) {
@@ -374,16 +468,27 @@
 
   function obterRegrasVaraPerito(peritoObj, vara) {
     if (!peritoObj) {
-      return { especialidade: "", intervaloMin: 10, procsPorPauta: 20, endereco: "", atendeFora: false };
+      return {
+        especialidade: "",
+        intervaloMin: 10,
+        procsPorPauta: 20,
+        endereco: "",
+        localExternoPadrao: "",
+        atendeFora: false,
+        padraoPauta: null
+      };
     }
     const vStr = String(vara || "").replace(/\D/g, "");
     const r = (vStr && peritoObj.regrasPorVara && peritoObj.regrasPorVara[vStr]) ? peritoObj.regrasPorVara[vStr] : null;
+    const pp = (peritoObj.padraoPauta && typeof peritoObj.padraoPauta === "object") ? peritoObj.padraoPauta : null;
     return {
       especialidade: peritoObj.titulada || (r && r.atuacao) || peritoObj.atuacao || "",
       intervaloMin: parseInt((r && r.intervaloMin) || peritoObj.intervaloMin, 10) || 10,
       procsPorPauta: parseInt((r && r.procsPorPauta) || peritoObj.procsPorPauta, 10) || 20,
       endereco: String(peritoObj.endereco || peritoObj.enderecoClinica || "").trim(),
-      atendeFora: Boolean(peritoObj.atendeFora || peritoObj.endereco || peritoObj.enderecoClinica)
+      localExternoPadrao: String(peritoObj.localExternoPadrao || "").trim(),
+      atendeFora: Boolean(peritoObj.atendeFora),
+      padraoPauta: pp
     };
   }
 
@@ -408,23 +513,68 @@
     return anoBase;
   }
 
+  function ehLinhaRuidoAdministrativo(texto) {
+    const l = normLower(texto);
+    if (!l) return true;
+    // Avisos de feriado ("Em fevereiro teremos feriado nos dias 8 a 10")
+    if (/\bferiados?\s+(?:nos?\s+|em\s+)?dias?\b/.test(l) || /\bteremos\s+feriado\b/.test(l)) {
+      return true;
+    }
+    // Recesso ou marco inicial ("Devido ao recesso...", "Em janeiro a partir do dia 07.")
+    if (
+      /\bdevido\s+ao\s+recesso\b/.test(l) ||
+      /\b(?:em\s+[a-z]+\s+|as\s+datas(?:\s+de\s+[a-z]+)?\s+(?:devem\s+ser\s+)?)?a\s+partir\s+d[eo]\s+dia\b/.test(l) ||
+      /\ba\s+partir\s+de\s+qual\s+dia\b/.test(l)
+    ) {
+      return true;
+    }
+    // Confirmação interrogativa da secretaria ("Você quis dizer 24/02, uma quarta?")
+    if (/\bvoce\s+quis\s+dizer\s+\d{1,2}[\/.]\d{1,2}\b/.test(l)) {
+      return true;
+    }
+    // Linhas puramente de solicitação/organização sem lista real de datas
+    const temListaDatas = /\d{1,2}\s*(?:,|;|e|\/)\s*\d{1,2}/.test(l);
+    if (
+      !temListaDatas &&
+      /\b(?:quando\s+possivel\s+me\s+passe|me\s+passe\s+as?\s+datas?|estou\s+passando\s+para\s+(?:pegar|combinar)|gostaria\s+de\s+(?:ver\s+a\s+possibilidade|\d+\s+datas?)|aguardo\s+as?\s+datas?|vou\s+organizar|vou\s+definir\s+hoje|ja\s+inclui\s+essas\s+datas)\b/.test(l)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function detectarDataInvalidaFimDeSemana(texto, dataRef, contextoMesAno = null) {
+    const l = normLower(texto);
+    const m = l.match(/\bo\s+dia\s+(\d{1,2})[\/.](\d{1,2})(?:[\/.](\d{2,4}))?\s+(?:e|eh|cai(?:\s+em|\s+no)?)\s+(?:domingo|sabado)\b/);
+    if (!m) return null;
+    const d = parseInt(m[1], 10);
+    const mes = parseInt(m[2], 10);
+    let ano = m[3] ? (m[3].length === 2 ? 2000 + parseInt(m[3], 10) : parseInt(m[3], 10)) : inferirAnoSemAno(mes, d, dataRef, contextoMesAno);
+    return validarDataParts(ano, mes, d);
+  }
+
   function extrairMesAnoContextoLinha(linha, dataRef) {
     const lNorm = normLower(linha);
     const ref = dataRef instanceof Date ? dataRef : new Date();
-    // Ex: "dezembro/2026", "dezembro de 2026", "pauta dezembro"
+    let melhorContexto = null;
+    let maiorPos = -1;
+
+    // Captura o último mês mencionado como referência de bloco (ex: "Em fevereiro...", "para fevereiro...")
     for (const [nomeMes, numMes] of Object.entries(MESES_EXTENSO)) {
       if (nomeMes.length < 3) continue;
-      const re = new RegExp(`\\b${nomeMes}(?:\\s*(?:/|de)?\\s*(20\\d{2}))?\\b`, "i");
-      const m = lNorm.match(re);
-      if (m) {
-        // Garante que não é um dia explícito "09 de dezembro"
+      const re = new RegExp(`\\b${nomeMes}(?:\\s*(?:/|de)?\\s*(20\\d{2}))?\\b`, "gi");
+      let m;
+      while ((m = re.exec(lNorm)) !== null) {
         const antes = lNorm.slice(0, m.index || 0);
-        if (!/\b\d{1,2}\s*(?:de)?\s*$/.test(antes)) {
+        if (!/\b\d{1,2}\s*(?:de)?\s*$/.test(antes) && m.index > maiorPos) {
           const ano = m[1] ? parseInt(m[1], 10) : inferirAnoSemAno(numMes, 15, ref);
-          return { mes: numMes, ano };
+          melhorContexto = { mes: numMes, ano };
+          maiorPos = m.index;
         }
       }
     }
+    if (melhorContexto) return melhorContexto;
+
     const mNum = lNorm.match(/\b(0?[1-9]|1[0-2])\s*\/\s*(20\d{2})\b/);
     if (mNum) {
       return { mes: parseInt(mNum[1], 10), ano: parseInt(mNum[2], 10) };
@@ -432,14 +582,108 @@
     return null;
   }
 
-  function extrairDatasDaLinha(linha, dataRef, contextoMesAno = null) {
+  const DIAS_SEMANA_MAP = {
+    domingo: 0, domingos: 0,
+    segunda: 1, segundas: 1,
+    terca: 2, tercas: 2,
+    quarta: 3, quartas: 3,
+    quinta: 4, quintas: 4,
+    sexta: 5, sextas: 5,
+    sabado: 6, sabados: 6
+  };
+
+  function extrairRecorrenciasSemanaisDaLinha(linha, dataRef, contextoMesAno = null, opcoes = {}) {
+    const listaFeriados = Array.isArray(opcoes.listaFeriados) ? opcoes.listaFeriados : FERIADOS_PADRAO_JFCE;
+    const subsecaoId = String(opcoes.subsecaoId || "");
     const datas = [];
+    const ignoradasPorFeriado = [];
+    let work = String(linha || "");
+
+    const mesesKeys = Object.keys(MESES_EXTENSO).join("|");
+    const mesesAccentPattern = `${mesesKeys}|março`;
+    const diaSemToken = "(?:domingos?|segundas?|ter[cç]as?|quartas?|quintas?|sextas?|s[áa]bados?)(?:[\\s-]+feiras?)?";
+    const diasSemLista = `${diaSemToken}(?:\\s*(?:,|\\be\\b|\\/)\\s*(?:as\\s+|os\\s+)?${diaSemToken})*`;
+    const mesesLista = `(?:${mesesAccentPattern})(?:\\s*(?:,|\\be\\b|\\/)\\s*(?:de\\s+)?(?:${mesesAccentPattern}))*`;
+
+    const expandirParaMes = (diasSemanaSet, mesNum, anoNum) => {
+      if (!mesNum || !anoNum || diasSemanaSet.size === 0) return;
+      const ultimoDia = new Date(anoNum, mesNum, 0).getDate();
+      for (let dia = 1; dia <= ultimoDia; dia++) {
+        const dt = new Date(anoNum, mesNum - 1, dia, 12, 0, 0);
+        if (!diasSemanaSet.has(dt.getDay())) continue;
+        const iso = validarDataParts(anoNum, mesNum, dia);
+        if (!iso) continue;
+        const feriado = verificarEhFeriado(iso, listaFeriados, subsecaoId);
+        if (feriado) {
+          ignoradasPorFeriado.push(`${String(dia).padStart(2, "0")}/${String(mesNum).padStart(2, "0")}/${anoNum} (${feriado.nome || "Feriado"})`);
+          continue;
+        }
+        if (!datas.includes(iso)) datas.push(iso);
+      }
+    };
+
+    const parsearDiasSemana = (trecho) => {
+      const set = new Set();
+      const limpo = normLower(trecho).replace(/[-–]feiras?/g, "").replace(/\bfeiras?\b/g, "");
+      const tokens = limpo.match(/\b(?:domingos?|segundas?|tercas?|quartas?|quintas?|sextas?|sabados?)\b/g) || [];
+      tokens.forEach((tk) => {
+        if (DIAS_SEMANA_MAP[tk] !== undefined) set.add(DIAS_SEMANA_MAP[tk]);
+      });
+      return set;
+    };
+
+    // 1. Padrão com mês explícito ligado ao(s) dia(s) da semana:
+    // Ex: "todas as segundas-feiras de dezembro", "toda segunda e quarta de janeiro e fevereiro"
+    const reComMes = new RegExp(
+      `\\b(?:(?:todas?|todos?)\\s+(?:as|os)\\s+|toda\\s+|todo\\s+|as\\s+|os\\s+)?(${diasSemLista})\\s+(?:d[eo]|em)\\s+(${mesesLista})(?:\\s+de\\s+(20\\d{2}))?\\b`,
+      "gi"
+    );
+    work = work.replace(reComMes, (full, diasSemStr, mesesStr, anoStr) => {
+      const diasSet = parsearDiasSemana(diasSemStr);
+      if (diasSet.size === 0) return full;
+      const mesTokens = normLower(mesesStr).match(new RegExp(`\\b(${mesesKeys})\\b`, "g")) || [];
+      if (mesTokens.length === 0) return full;
+      mesTokens.forEach((mNome) => {
+        const mesNum = MESES_EXTENSO[mNome];
+        if (!mesNum) return;
+        const anoNum = anoStr ? parseInt(anoStr, 10) : inferirAnoSemAno(mesNum, 15, dataRef, contextoMesAno);
+        expandirParaMes(diasSet, mesNum, anoNum);
+      });
+      return " __DATA__ ";
+    });
+
+    // 2. Fallback com quantificador explícito herdando contextoMesAno ("todas as segundas-feiras")
+    if (datas.length === 0 && contextoMesAno && contextoMesAno.mes) {
+      const reSemMes = new RegExp(
+        `\\b(?:todas?\\s+(?:as\\s+)?|todos?\\s+(?:os\\s+)?)(${diasSemLista})\\b`,
+        "gi"
+      );
+      work = work.replace(reSemMes, (full, diasSemStr) => {
+        const diasSet = parsearDiasSemana(diasSemStr);
+        if (diasSet.size === 0) return full;
+        expandirParaMes(diasSet, contextoMesAno.mes, contextoMesAno.ano);
+        return " __DATA__ ";
+      });
+    }
+
+    return { datas, textoSemRecorrencias: work, ignoradasPorFeriado };
+  }
+
+  function extrairDatasDaLinha(linha, dataRef, contextoMesAno = null, opcoesDatas = {}) {
+    const datas = [];
+    const ignoradasPorFeriado = [];
     const mascarado = { texto: String(linha || "") };
     const adicionarData = (iso) => {
       if (iso && !datas.includes(iso)) datas.push(iso);
     };
 
-    let work = String(linha || "");
+    const rec = extrairRecorrenciasSemanaisDaLinha(linha, dataRef, contextoMesAno, opcoesDatas);
+    rec.datas.forEach(adicionarData);
+    rec.ignoradasPorFeriado.forEach((item) => {
+      if (!ignoradasPorFeriado.includes(item)) ignoradasPorFeriado.push(item);
+    });
+
+    let work = rec.textoSemRecorrencias;
 
     // 1. ISO YYYY-MM-DD
     work = work.replace(/\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/g, (full, a, m, d) => {
@@ -451,9 +695,10 @@
       return full;
     });
 
-    // 2. Lista de dias com mês por extenso: "dias 07, 14 e 21 de dezembro (de 2026)?"
+    // 2. Lista de dias com mês por extenso depois: "12,19,26de janeiro" / "13, 14 e 15 de Janeiro de 2027"
     const mesesKeys = Object.keys(MESES_EXTENSO).join("|");
-    const reListaMesExtenso = new RegExp(`\\b(?:dias?\\s+)?((?:\\d{1,2}\\s*(?:,|;|e|\\/)\\s*)+\\d{1,2})\\s+de\\s+(${mesesKeys})(?:\\s+de\\s+(20\\d{2}))?\\b`, "gi");
+    const mesesAccentPattern = `${mesesKeys}|março`;
+    const reListaMesExtenso = new RegExp(`\\b(?:dias?\\s+)?((?:\\d{1,2}\\s*(?:,|;|\\be\\b|\\/)\\s*)+\\d{1,2})\\s*de\\s+(${mesesAccentPattern})(?:\\s+de\\s+(20\\d{2}))?\\b`, "gi");
     work = work.replace(reListaMesExtenso, (full, diasStr, mesNome, anoStr) => {
       const mesNum = MESES_EXTENSO[normLower(mesNome)];
       if (!mesNum) return full;
@@ -464,6 +709,30 @@
         adicionarData(validarDataParts(anoNum, mesNum, diaNum));
       });
       return " __DATA__ ";
+    });
+
+    // 2B. Mês ANTES da lista (inclusive múltiplas ocorrências e parênteses):
+    // Ex: "Fevereiro 2, 16, 23", "para Janeiro as datas 13,20 e 27 e para fevereiro as datas 3,17,24", "em janeiro(13,20,27)"
+    const reMesAntesLista = new RegExp(
+      `(^|[\\s,;(\\-–])(?:(?:em|para|de|m[êe]s\\s+de)\\s+)?(${mesesAccentPattern})(?:\\s+de\\s+(20\\d{2}))?\\s*(?::\\s*|\\(\\s*|(?:(?:para|em)\\s+)?(?:as\\s+)?datas?\\s+|dias?\\s+|\\s+)((?:\\d{1,2}\\s*(?:,|;|\\be\\b)\\s*)*\\d{1,2})(?:\\s*\\))?(?!\\s*(?:[ªºa°]|:?\\d|h\\b|min\\b|vagas?|per[ií]cias?|processos?|horas?|hora\\b|pautas?|anos?))`,
+      "gi"
+    );
+    work = work.replace(reMesAntesLista, (full, prefixo, mesNome, anoStr, diasStr) => {
+      const mesNum = MESES_EXTENSO[normLower(mesNome)];
+      if (!mesNum) return full;
+      const diasTokens = diasStr.match(/\d{1,2}/g) || [];
+      if (diasTokens.length === 0) return full;
+      let adicionouAlguma = false;
+      diasTokens.forEach((dTxt) => {
+        const diaNum = parseInt(dTxt, 10);
+        const anoNum = anoStr ? parseInt(anoStr, 10) : inferirAnoSemAno(mesNum, diaNum, dataRef, contextoMesAno);
+        const iso = validarDataParts(anoNum, mesNum, diaNum);
+        if (iso) {
+          adicionarData(iso);
+          adicionouAlguma = true;
+        }
+      });
+      return adicionouAlguma ? `${prefixo} __DATA__ ` : full;
     });
 
     // 3. Lista de dias com mês numérico: "dias 07, 14 e 21/12(/2026)?"
@@ -480,8 +749,8 @@
       return " __DATA__ ";
     });
 
-    // 4. Data única por extenso: "09 de dezembro (de 2026)?"
-    const reDataExtenso = new RegExp(`\\b(\\d{1,2})\\s+de\\s+(${mesesKeys})(?:\\s+de\\s+(20\\d{2}))?\\b`, "gi");
+    // 4. Data única por extenso: "09 de dezembro (de 2026)?" (aceita sem espaço antes do "de")
+    const reDataExtenso = new RegExp(`\\b(\\d{1,2})\\s*de\\s+(${mesesAccentPattern})(?:\\s+de\\s+(20\\d{2}))?\\b`, "gi");
     work = work.replace(reDataExtenso, (full, diaStr, mesNome, anoStr) => {
       const mesNum = MESES_EXTENSO[normLower(mesNome)];
       const diaNum = parseInt(diaStr, 10);
@@ -509,23 +778,50 @@
       return full;
     });
 
-    // 6. Data DD/MM sem ano (mas não mm/2026)
-    work = work.replace(/\b(\d{1,2})\/(\d{1,2})\b/g, (full, dStr, mStr) => {
+    // 6. Data DD/MM ou DD.MM sem ano (mas não mm/2026 ou valores monetários/versões)
+    work = work.replace(/(^|[^\d.$])(\d{1,2})([\/.])(\d{1,2})(?=$|[^\d.])(?!\.\d|\d)/g, (full, prefixo, dStr, sep, mStr, offset, origStr) => {
       const d = parseInt(dStr, 10);
       const m = parseInt(mStr, 10);
       if (m < 1 || m > 12 || d < 1 || d > 31) return full;
+      if (sep === ".") {
+        const antes = origStr.slice(Math.max(0, offset - 8), offset + prefixo.length);
+        if (/(?:r\$|versao|v\.?)\s*$/i.test(antes)) return full;
+      }
       const anoNum = inferirAnoSemAno(m, d, dataRef, contextoMesAno);
       const iso = validarDataParts(anoNum, m, d);
       if (iso) {
         adicionarData(iso);
-        return " __DATA__ ";
+        return `${prefixo} __DATA__ `;
       }
       return full;
     });
 
-    // 7. "dia 12" ou "dias 05, 12 e 19" quando há contextoMesAno definido
+    // 7. Listas prefixadas por dois-pontos ou local quando há contextoMesAno definido: "Externo: 15, 22, 23, 25, 26." / "Na JEF: 13 e 19."
+    if (contextoMesAno && contextoMesAno.mes) {
+      work = work.replace(
+        /(^|[\s.;])((?:extern[oa]s?|na\s+jef|no\s+jef|jef|pr[eé]dio|fora|cl[ií]nica|justi[çc]a(?:\s+federal)?|datas?|dias?)\s*:)\s*((?:\d{1,2}\s*(?:,|;|\be\b)\s*)*\d{1,2})(?=$|[\s.,;!?)\-])(?!\s*(?:[ªºa°]|:|\d|h\b|min\b|vagas?|per[ií]cias?|processos?))/gi,
+        (full, prefixo, rotulo, listaDias) => {
+          const nums = listaDias.match(/\d{1,2}/g) || [];
+          let addCount = 0;
+          nums.forEach((n) => {
+            const d = parseInt(n, 10);
+            if (d >= 1 && d <= 31) {
+              const iso = validarDataParts(contextoMesAno.ano, contextoMesAno.mes, d);
+              if (iso) {
+                adicionarData(iso);
+                addCount++;
+              }
+            }
+          });
+          // Mantém o rótulo (ex: "Externo:", "Na JEF:") no textoSemDatas para o detector de local identificar!
+          return addCount > 0 ? `${prefixo}${rotulo} __DATA__ ` : full;
+        }
+      );
+    }
+
+    // 8. Fallback: "dia 12" ou "dias 05, 12 e 19" quando há contextoMesAno definido
     if (datas.length === 0 && contextoMesAno && contextoMesAno.mes) {
-      work = work.replace(/\bdias?\s+((?:\d{1,2}\s*(?:,|;|e)?\s*)+)/gi, (full, listaDias) => {
+      work = work.replace(/\bdias?\s+((?:\d{1,2}\s*(?:,|;|\be\b)?\s*)+)(?!\s*(?:[ªºa°]|:|\d|h\b|min\b|vagas?|per[ií]cias?|processos?))/gi, (full, listaDias) => {
         const nums = listaDias.match(/\d{1,2}/g) || [];
         nums.forEach((n) => {
           const d = parseInt(n, 10);
@@ -538,7 +834,84 @@
     }
 
     mascarado.texto = work;
-    return { datas, textoSemDatas: mascarado.texto };
+    return { datas, textoSemDatas: mascarado.texto, ignoradasPorFeriado };
+  }
+
+  function extrairDiretivaHorarioCorrido(linha, dataRef, contextoMesAno = null) {
+    const bruto = String(linha || "");
+    const sentencas = bruto.split(/\.(?!\d)|[;\n]+/);
+    const mantidas = [];
+    const datasCorrido = [];
+    let temCorridoSemData = false;
+    let pausaRestanteMin = null;
+
+    sentencas.forEach((sent) => {
+      const trimmed = sent.trim();
+      if (!trimmed) return;
+      const sNorm = normLower(trimmed);
+
+      if (/\bhorario\s+corrido\b/.test(sNorm)) {
+        const res = extrairDatasDaLinha(trimmed, dataRef, contextoMesAno);
+        if (res.datas.length > 0) {
+          res.datas.forEach((d) => {
+            if (!datasCorrido.includes(d)) datasCorrido.push(d);
+          });
+        } else {
+          temCorridoSemData = true;
+        }
+        return;
+      }
+
+      const mAlmoco = sNorm.match(/\b(\d+)\s*h(?:oras?)?\s+de\s+almoco\b/);
+      if (mAlmoco && (/\bpadrao\b/.test(sNorm) || /\brestante\b/.test(sNorm) || /\balmoco\b/.test(sNorm))) {
+        pausaRestanteMin = (parseInt(mAlmoco[1], 10) || 1) * 60;
+        return;
+      }
+
+      mantidas.push(trimmed);
+    });
+
+    return {
+      textoSemClausulaCorrido: mantidas.join(". "),
+      datasCorrido,
+      temCorridoSemData,
+      pausaRestanteMin
+    };
+  }
+
+  function extrairAjustesVagasPorData(linha, dataRef, contextoMesAno = null) {
+    const partes = String(linha || "").split(/\.\s*(?!\d)|;\s*|,\s*(?=mas\b|por[eé]m\b|j[aá]\s+n[ao])|\bmas\b/i);
+    const ajustes = [];
+    let ctxLocal = contextoMesAno;
+
+    for (const parte of partes) {
+      const trimmed = parte.trim();
+      if (!trimmed) continue;
+      const resDatas = extrairDatasDaLinha(trimmed, dataRef, ctxLocal);
+      if (resDatas.datas.length === 0) continue;
+
+      const lastIso = resDatas.datas[resDatas.datas.length - 1];
+      ctxLocal = {
+        mes: parseInt(lastIso.slice(5, 7), 10),
+        ano: parseInt(lastIso.slice(0, 4), 10)
+      };
+
+      let qtd = extrairQuantidadeDaLinha(resDatas.textoSemDatas);
+      if (qtd === null) {
+        const lSem = normLower(resDatas.textoSemDatas);
+        const mQ = lSem.match(/\b(?:d[aá]|faz(?:er)?|marc(?:a|ar)|at[eé]|somente|apenas)\s+(?:as?\s+|os?\s+)?(\d{1,3})\b(?!\s*(?:h\b|:|min\b|dias?\b|[ªºa°]|vara|vf))/i);
+        if (mQ) {
+          const val = parseInt(mQ[1], 10);
+          if (val >= 1 && val <= 200) qtd = val;
+        }
+      }
+
+      if (qtd !== null) {
+        ajustes.push({ datas: resDatas.datas, quantidade: qtd, trecho: trimmed });
+      }
+    }
+
+    return ajustes;
   }
 
   function extrairHorariosDaLinha(texto) {
@@ -549,15 +922,15 @@
       if (hhmm && !horarios.includes(hhmm)) horarios.push(hhmm);
     };
 
-    // Padrões explícitos: 08:00, 12:15, 08h30, 8h, às 9h, 13h00
-    const reHora = /(?:^|[\s(,\-–])(?:a\s*partir\s*d[ao]s?|as\s+)?(\d{1,2})\s*(?:(?::|h)\s*(\d{2})?|hrs?|hs?)\b(?!\s*min)/gi;
+    // Padrões explícitos: 08:00, 08:00h, 12:15, 08h30, 8h, às 9h, 13h00
+    const reHora = /(?:^|[\s(,\-–])(?:a\s*partir\s*d[ao]s?|as\s+)?(\d{1,2})\s*(?::\s*(\d{2})(?:\s*(?:hrs?|hs?))?|h\s*(\d{2})?|hrs?|hs?)\b(?!\s*min)/gi;
     let m;
     while ((m = reHora.exec(l)) !== null) {
       const trechoCompleto = m[0];
       const temSeparadorHora = trechoCompleto.includes(":") || /\d\s*h/i.test(trechoCompleto);
       if (!temSeparadorHora) continue;
       const h = parseInt(m[1], 10);
-      const min = m[2] ? parseInt(m[2], 10) : 0;
+      const min = m[2] ? parseInt(m[2], 10) : (m[3] ? parseInt(m[3], 10) : 0);
       if (h >= 6 && h <= 21 && min >= 0 && min <= 59) {
         adicionarHora(`${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`);
       }
@@ -689,10 +1062,34 @@
       l.includes("premium") ||
       l.includes("clinica ")
     ) {
-      local = "Clínica Própria";
-    } else if (l.includes("consultorio") || l.includes("hospital") || l.includes("domiciliar") || l.includes("fora do predio") || l.includes("fora do forum") || l.includes("externa")) {
-      local = "Fora / Consultório / Hospital";
-    } else if (l.includes("justica federal") || l.includes("no predio") || l.includes("predio da justica") || l.includes("forum") || l.includes("sede")) {
+      local = (l.includes("noblan") && !peritoRegras?.localExternoPadrao)
+        ? "Clínica Noblan"
+        : (peritoRegras?.localExternoPadrao || "Clínica Própria");
+    } else if (
+      /\bextern[oa]s?\b/.test(l) ||
+      /\bfora\b/.test(l) ||
+      l.includes("consultorio") ||
+      l.includes("hospital") ||
+      l.includes("domiciliar") ||
+      l.includes("fora do predio") ||
+      l.includes("fora do forum")
+    ) {
+      if (peritoRegras && peritoRegras.localExternoPadrao) {
+        local = peritoRegras.localExternoPadrao;
+      } else if (/\bextern[oa]s?\b/.test(l) || /\bfora\b/.test(l)) {
+        local = "Clínica Própria";
+      } else {
+        local = "Fora / Consultório / Hospital";
+      }
+    } else if (
+      /\b(?:na|no)\s+jef\b/.test(l) ||
+      /\bdo\s+predio\b/.test(l) ||
+      l.includes("justica federal") ||
+      l.includes("no predio") ||
+      l.includes("predio da justica") ||
+      l.includes("forum") ||
+      l.includes("sede")
+    ) {
       local = "Justiça Federal";
     }
 
@@ -722,13 +1119,13 @@
 
     // Se encontrou endereço explícito mas o local ficou vazio, marca como externa
     if (!local && endereco) {
-      local = "Clínica Própria";
+      local = (peritoRegras && peritoRegras.localExternoPadrao) ? peritoRegras.localExternoPadrao : "Clínica Própria";
     }
 
     // Herança do cadastro do perito se não informado no texto
     if (!local) {
       if (peritoRegras && peritoRegras.atendeFora) {
-        local = "Clínica Própria";
+        local = peritoRegras.localExternoPadrao || "Clínica Própria";
       } else {
         local = "Justiça Federal";
       }
@@ -837,6 +1234,95 @@
   }
 
   /**
+   * Aplica a regra de horário corrido (0 min de almoço) nos cards de uma data específica.
+   */
+  function aplicarHorarioCorridoNasPautas(listaPautas, datasCorrido, peritoNomeAlvo, listaFeriados = FERIADOS_PADRAO_JFCE) {
+    if (!Array.isArray(listaPautas) || !Array.isArray(datasCorrido) || datasCorrido.length === 0) return false;
+    const alvoNorm = normLower(peritoNomeAlvo || "");
+    let alterou = false;
+
+    datasCorrido.forEach((dataIso) => {
+      const indices = [];
+      listaPautas.forEach((p, idx) => {
+        if (!p || p.data !== dataIso) return;
+        if (alvoNorm && normLower(p.peritoNome || "") !== alvoNorm) return;
+        indices.push(idx);
+      });
+      if (indices.length === 0) return;
+
+      indices.sort((a, b) => String(listaPautas[a].horaInicio || "").localeCompare(String(listaPautas[b].horaInicio || "")));
+      const obsCorrido = "Horário corrido (sem intervalo de almoço)";
+
+      if (indices.length >= 2) {
+        const idxManha = indices[0];
+        const idxTarde = indices[1];
+        const manha = listaPautas[idxManha];
+        const tarde = listaPautas[idxTarde];
+        const terminoManha = calcularHorarioTermino(manha.horaInicio, manha.intervaloMin, manha.quantidade);
+        if (terminoManha && terminoManha !== "--:--") {
+          tarde.horaInicio = terminoManha;
+          tarde.hora = terminoManha;
+          tarde.horaTermino = calcularHorarioTermino(terminoManha, tarde.intervaloMin, tarde.quantidade);
+        }
+        const obsAtual = String(tarde.observacoes || "").trim();
+        if (!normLower(obsAtual).includes("horario corrido")) {
+          tarde.observacoes = obsAtual ? `${obsAtual} • ${obsCorrido}` : obsCorrido;
+          tarde.observacao = tarde.observacoes;
+        }
+        alterou = true;
+      } else {
+        const unica = listaPautas[indices[0]];
+        const obsAtual = String(unica.observacoes || "").trim();
+        if (!normLower(obsAtual).includes("horario corrido")) {
+          unica.observacoes = obsAtual ? `${obsAtual} • ${obsCorrido}` : obsCorrido;
+          unica.observacao = unica.observacoes;
+        }
+        alterou = true;
+      }
+    });
+
+    return alterou;
+  }
+
+  /**
+   * Insere ou mescla pauta no array de extração evitando cards duplicados no mesmo lote/conversa.
+   */
+  function inserirOuMesclarPautaExtraida(pautasExtraidas, canonica, opcoesMerge = {}) {
+    const chaveNova = `${canonica.data || ""}|${normLower(canonica.peritoNome || "")}|${canonica.horaInicio || ""}`;
+    if (canonica.data && canonica.peritoNome) {
+      const idxExist = pautasExtraidas.findIndex((p) => {
+        if (!p || !p.data || !p.peritoNome) return false;
+        const ch = `${p.data}|${normLower(p.peritoNome)}|${p.horaInicio || ""}`;
+        return ch === chaveNova;
+      });
+      if (idxExist !== -1) {
+        const exist = pautasExtraidas[idxExist];
+        if (opcoesMerge.localExplicito && canonica.local) {
+          exist.local = canonica.local;
+          exist.endereco = canonica.endereco || "";
+        }
+        if (opcoesMerge.qtdExplicita && canonica.quantidade) {
+          exist.quantidade = canonica.quantidade;
+          exist.vagas = canonica.quantidade;
+          exist.horaTermino = calcularHorarioTermino(exist.horaInicio, exist.intervaloMin, exist.quantidade);
+        }
+        if (canonica.observacoes && !normLower(exist.observacoes || "").includes(normLower(canonica.observacoes))) {
+          exist.observacoes = exist.observacoes ? `${exist.observacoes} • ${canonica.observacoes}` : canonica.observacoes;
+          exist.observacao = exist.observacoes;
+        }
+        if (opcoesMerge.trechoOrigem && exist._meta) {
+          exist._meta.trechoOrigem = exist._meta.trechoOrigem
+            ? `${exist._meta.trechoOrigem} | ${opcoesMerge.trechoOrigem}`
+            : opcoesMerge.trechoOrigem;
+        }
+        return false;
+      }
+    }
+    pautasExtraidas.push(canonica);
+    return true;
+  }
+
+  /**
    * Parser principal de conversas do WhatsApp (1 ou N pautas).
    * @param {string} textoBruto
    * @param {object} opcoes
@@ -847,7 +1333,17 @@
     const subsecaoVaras = Array.isArray(opcoes.subsecaoVaras) ? opcoes.subsecaoVaras : [];
     const varaPadrao = String(opcoes.varaPadrao || subsecaoVaras[0] || "19").replace(/\D/g, "") || "19";
     const situacaoPadrao = String(opcoes.situacaoPadrao || "Não marcado");
+    const modoTurnos = String(opcoes.modoTurnos || "padrao_perito").trim();
+    const listaFeriados = Array.isArray(opcoes.listaFeriados) ? opcoes.listaFeriados : FERIADOS_PADRAO_JFCE;
+    const subsecaoId = String(opcoes.subsecaoId || "");
     const dataRef = opcoes.dataReferencia instanceof Date ? opcoes.dataReferencia : new Date();
+    const peritoPadraoRaw = String(opcoes.peritoPadrao || "").trim();
+    const peritoPadraoResolvido = peritoPadraoRaw
+      ? encontrarPeritoNoTexto(peritoPadraoRaw, bancoPeritos)
+      : { nome: "", peritoObj: null };
+    if (peritoPadraoRaw && !peritoPadraoResolvido.nome) {
+      peritoPadraoResolvido.nome = normalizarNomePeritoOficial(peritoPadraoRaw, bancoPeritos);
+    }
 
     if (!textoLimpo.trim()) {
       return { pautas: [], avisos: ["Nenhum texto informado para interpretar."] };
@@ -884,8 +1380,8 @@
     const alertas = [];
 
     let contexto = {
-      peritoNome: "",
-      peritoObj: null,
+      peritoNome: peritoPadraoResolvido.nome || "",
+      peritoObj: peritoPadraoResolvido.peritoObj || null,
       remetentePeritoNome: "",
       remetentePeritoObj: null,
       vara: "",
@@ -939,8 +1435,8 @@
 
       if (seg.ehNovaMsg) {
         fecharCabecalhoPendenteSeNecessario();
-        contexto.peritoNome = "";
-        contexto.peritoObj = null;
+        contexto.peritoNome = peritoPadraoResolvido.nome || "";
+        contexto.peritoObj = peritoPadraoResolvido.peritoObj || null;
         contexto.vara = "";
         contexto.local = "";
         contexto.endereco = "";
@@ -957,19 +1453,111 @@
       const linha = seg.texto;
       if (!linha) continue;
 
-      // Verifica se linha define mês/ano de contexto (ex: "Pauta Dezembro/2026")
-      const mesAnoLinha = extrairMesAnoContextoLinha(linha, dataRef);
+      // 0A. Correção explícita de dia que cai em fim de semana ("O dia 20/02 é domingo")
+      const dataFdsRemover = detectarDataInvalidaFimDeSemana(linha, dataRef, contexto.mesAno);
+      if (dataFdsRemover) {
+        for (let i = pautasExtraidas.length - 1; i >= 0; i--) {
+          if (pautasExtraidas[i] && pautasExtraidas[i].data === dataFdsRemover) {
+            pautasExtraidas.splice(i, 1);
+          }
+        }
+        const partesIso = dataFdsRemover.split("-");
+        alertas.push(`📅 Data ${partesIso[2]}/${partesIso[1]}/${partesIso[0]} ignorada por ter sido indicada como domingo/sábado.`);
+        continue;
+      }
+
+      // 0B. Filtro anti-ruído (avisos de recesso, feriados, perguntas de secretaria)
+      if (ehLinhaRuidoAdministrativo(linha)) {
+        continue;
+      }
+
+      // 0C. Extração de cláusula "horário corrido" (pode vir sozinha ou após lista na mesma linha)
+      const dirCorrido = extrairDiretivaHorarioCorrido(linha, dataRef, contexto.mesAno);
+      const linhaEfetiva = dirCorrido.textoSemClausulaCorrido;
+
+      // Verifica se linha define mês/ano de contexto (ex: "Em janeiro chefa, podemos fazer assim:", "Pauta Dezembro/2026")
+      const mesAnoLinha = extrairMesAnoContextoLinha(linhaEfetiva || linha, dataRef);
       if (mesAnoLinha) {
         contexto.mesAno = mesAnoLinha;
       }
 
-      // Identifica datas na linha
-      const { datas, textoSemDatas } = extrairDatasDaLinha(linha, dataRef, contexto.mesAno);
+      // Identifica perito na linha (ou mantém contexto/remetente/peritoPadrao)
+      const peritoPre = encontrarPeritoNoTexto(linhaEfetiva || linha, bancoPeritos);
+      const peritoEfetivoNomeTmp = peritoPre.nome || contexto.peritoNome || contexto.remetentePeritoNome || peritoPadraoResolvido.nome || "";
 
-      // Identifica perito na linha
+      // 0D. Ajustes por data em pautas já extraídas ("No dia 13/01 só posso marcar 25 perícias..., mas no dia 20 e 27 dá as 46")
+      if (linhaEfetiva && pautasExtraidas.length > 0 && peritoEfetivoNomeTmp) {
+        const ajustes = extrairAjustesVagasPorData(linhaEfetiva, dataRef, contexto.mesAno);
+        if (ajustes.length > 0) {
+          const pNormAlvo = normLower(peritoEfetivoNomeTmp);
+          const todasDatasExistem = ajustes.every((aj) =>
+            aj.datas.every((dt) => pautasExtraidas.some((p) => p && p.data === dt && normLower(p.peritoNome || "") === pNormAlvo))
+          );
+          if (todasDatasExistem) {
+            ajustes.forEach((aj) => {
+              aj.datas.forEach((dt) => {
+                const indicesDt = [];
+                pautasExtraidas.forEach((p, idxP) => {
+                  if (p && p.data === dt && normLower(p.peritoNome || "") === pNormAlvo) {
+                    indicesDt.push(idxP);
+                  }
+                });
+                if (indicesDt.length === 1) {
+                  const pTarget = pautasExtraidas[indicesDt[0]];
+                  const qtdAntiga = pTarget.quantidade;
+                  pTarget.quantidade = aj.quantidade;
+                  pTarget.vagas = aj.quantidade;
+                  pTarget.horaTermino = calcularHorarioTermino(pTarget.horaInicio, pTarget.intervaloMin, aj.quantidade);
+                  if (qtdAntiga && aj.quantidade < qtdAntiga) {
+                    const nota = `Ajustado para ${aj.quantidade} vagas (limite diário)`;
+                    if (!normLower(pTarget.observacoes || "").includes("limite diario")) {
+                      pTarget.observacoes = pTarget.observacoes ? `${pTarget.observacoes} • ${nota}` : nota;
+                      pTarget.observacao = pTarget.observacoes;
+                    }
+                  }
+                } else if (indicesDt.length >= 2) {
+                  let restante = aj.quantidade;
+                  indicesDt.sort((a, b) => String(pautasExtraidas[a].horaInicio || "").localeCompare(String(pautasExtraidas[b].horaInicio || "")));
+                  for (let k = indicesDt.length - 1; k >= 0; k--) {
+                    const pTarget = pautasExtraidas[indicesDt[k]];
+                    if (k === indicesDt.length - 1 && restante <= (pautasExtraidas[indicesDt[0]].quantidade || 20)) {
+                      // Cabe tudo no 1º turno; mantém ajuste proporcional ou no 1º turno
+                      pautasExtraidas.splice(indicesDt[k], 1);
+                    } else if (restante > 0) {
+                      const novaQ = Math.min(pTarget.quantidade || restante, restante);
+                      pTarget.quantidade = novaQ;
+                      pTarget.vagas = novaQ;
+                      pTarget.horaTermino = calcularHorarioTermino(pTarget.horaInicio, pTarget.intervaloMin, novaQ);
+                      restante -= novaQ;
+                    }
+                  }
+                }
+              });
+            });
+            continue;
+          }
+        }
+      }
+
+      // Identifica datas na linha (após remover cláusulas de horário corrido)
+      const { datas, textoSemDatas, ignoradasPorFeriado = [] } = extrairDatasDaLinha(linhaEfetiva, dataRef, contexto.mesAno, {
+        listaFeriados,
+        subsecaoId
+      });
+      if (ignoradasPorFeriado.length > 0) {
+        alertas.push(`🗓️ Recesso/Feriado ignorado na recorrência semanal: ${ignoradasPorFeriado.join(", ")}.`);
+      }
+      if (datas.length > 0) {
+        const lastIso = datas[datas.length - 1];
+        contexto.mesAno = {
+          mes: parseInt(lastIso.slice(5, 7), 10),
+          ano: parseInt(lastIso.slice(0, 4), 10)
+        };
+      }
+
+      // Identifica perito no trecho restante
       const peritoLinha = encontrarPeritoNoTexto(textoSemDatas, bancoPeritos);
       if (peritoLinha.nome) {
-        // Se mudou o perito, fecha eventual pauta-cabeçalho anterior sem datas
         if (contexto.cabecalhoPendente && normLower(contexto.cabecalhoPendente.peritoNome) !== normLower(peritoLinha.nome)) {
           fecharCabecalhoPendenteSeNecessario();
         }
@@ -977,8 +1565,14 @@
         contexto.peritoObj = peritoLinha.peritoObj;
       }
 
-      const peritoEfetivoNome = peritoLinha.nome || contexto.peritoNome || contexto.remetentePeritoNome || "";
-      const peritoEfetivoObj = peritoLinha.peritoObj || contexto.peritoObj || contexto.remetentePeritoObj || null;
+      const peritoEfetivoNome = peritoLinha.nome || contexto.peritoNome || contexto.remetentePeritoNome || peritoPadraoResolvido.nome || "";
+      const peritoEfetivoObj = peritoLinha.peritoObj || contexto.peritoObj || contexto.remetentePeritoObj || peritoPadraoResolvido.peritoObj || null;
+
+      // Se a linha era só diretiva de horário corrido (ex: "Ai ia pedir para, apenas no dia 19, marcar horário corrido."), aplica nos cards já gerados!
+      if (datas.length === 0 && dirCorrido.datasCorrido.length > 0) {
+        aplicarHorarioCorridoNasPautas(pautasExtraidas, dirCorrido.datasCorrido, peritoEfetivoNome);
+        continue;
+      }
 
       // Varas na linha
       const varasLinha = extrairVarasDaLinha(textoSemDatas, subsecaoVaras);
@@ -989,11 +1583,11 @@
       const qtdLinha = extrairQuantidadeDaLinha(textoSemDatas);
       const intLinha = extrairIntervaloDaLinha(textoSemDatas);
 
-      // Horários
+      // Horários explícitos
       const horariosLinha = extrairHorariosDaLinha(textoSemDatas);
 
       // Local e endereço
-      const temPalavraLocal = /\b(justica|predio|forum|clinica|propria|particular|telepericia|consultorio|hospital|vila clinic|noblan|sao lucas|rua|av\.?|avenida|endere[çc]o|remota?|externa)\b/i.test(normLower(textoSemDatas));
+      const temPalavraLocal = /\b(justica|predio|forum|clinica|propria|particular|telepericia|consultorio|hospital|vila clinic|noblan|sao lucas|rua|av\.?|avenida|endere[çc]o|remota?|extern[oa]s?|na\s+jef|no\s+jef|fora)\b/i.test(normLower(textoSemDatas));
       let localInfo = { local: "", endereco: "" };
       if (temPalavraLocal) {
         localInfo = extrairLocalEEndereco(textoSemDatas, regrasPerito);
@@ -1016,11 +1610,11 @@
         if (intLinha !== null) contexto.intervaloMin = intLinha;
         if (temPalavraLocal && localInfo.local) {
           contexto.local = localInfo.local;
-          contexto.endereco = localInfo.endereco;
+          contexto.endereco = ehLocalFora(localInfo.local) ? localInfo.endereco : "";
         }
         if (temPalavraSituacao) contexto.situacao = situacaoEfetiva;
 
-        // Se a linha parecia descrever uma pauta completa exceto a data, guarda caso nenhuma linha com data venha depois
+        // Só cria cabecalhoPendente se realmente houve menção explícita a perito/qtd/horário/endereço NA LINHA (ignora peritoPadrao herdado sozinho)
         if (peritoLinha.nome || qtdLinha !== null || horariosLinha.length > 0 || (temPalavraLocal && localInfo.endereco)) {
           contexto.cabecalhoPendente = {
             usadoPorFilho: false,
@@ -1034,7 +1628,7 @@
             intervaloMin: intLinha !== null ? intLinha : (contexto.intervaloMin !== null ? contexto.intervaloMin : regrasPerito.intervaloMin),
             horarios: horariosLinha,
             situacao: situacaoEfetiva,
-            observacoes: linha.length <= 140 && temPalavraLocal && !localInfo.endereco ? "" : "",
+            observacoes: "",
             trechoOrigem: linha
           };
         }
@@ -1046,49 +1640,121 @@
         contexto.cabecalhoPendente.usadoPorFilho = true;
       }
 
-      const qtdEfetiva = qtdLinha !== null
-        ? qtdLinha
-        : (contexto.quantidade !== null ? contexto.quantidade : regrasPerito.procsPorPauta);
       const intEfetivo = intLinha !== null
         ? intLinha
         : (contexto.intervaloMin !== null ? contexto.intervaloMin : regrasPerito.intervaloMin);
-
-      const horariosParaGerar = horariosLinha.length > 0
-        ? horariosLinha
-        : ((contexto.cabecalhoPendente && contexto.cabecalhoPendente.horarios.length > 0)
-            ? contexto.cabecalhoPendente.horarios
-            : ["08:00"]);
 
       const varasParaGerar = varasLinha.length > 0
         ? varasLinha
         : [contexto.vara || varaPadrao];
 
-      // Cruzamento: cada data x cada horário informado na linha
-      datas.forEach((dataIso) => {
-        horariosParaGerar.forEach((horaStr, hIdx) => {
-          // Se há 2 horários (ex: 08h e 13h) e 2 varas (ex: 19ª e 31ª), casa na ordem; senão usa a vara correspondente ou primeira
-          const varaEscolhida = varasParaGerar.length === horariosParaGerar.length
-            ? varasParaGerar[hIdx]
-            : varasParaGerar[0];
+      const horariosExplicitos = horariosLinha.length > 0
+        ? horariosLinha
+        : ((contexto.cabecalhoPendente && contexto.cabecalhoPendente.horarios.length > 0)
+            ? contexto.cabecalhoPendente.horarios
+            : []);
 
+      const pp = regrasPerito.padraoPauta;
+      const efetivoModo = (modoTurnos && modoTurnos !== "padrao_perito")
+        ? modoTurnos
+        : ((pp && pp.turnosPadrao) ? pp.turnosPadrao : "manha");
+
+      const criarListaBlocosParaData = (dataIso) => {
+        // Quando a mensagem especificou horários explícitos (ex: "às 08h30" ou "às 08h e 13h")
+        if (horariosExplicitos.length > 0) {
+          const qtdExpl = qtdLinha !== null
+            ? qtdLinha
+            : (contexto.quantidade !== null ? contexto.quantidade : regrasPerito.procsPorPauta);
+          return horariosExplicitos.map((hr, hIdx) => ({
+            horaInicio: hr,
+            quantidade: qtdExpl,
+            vara: varasParaGerar.length === horariosExplicitos.length ? varasParaGerar[hIdx] : varasParaGerar[0],
+            observacoes: dirCorrido.temCorridoSemData || dirCorrido.datasCorrido.includes(dataIso)
+              ? "Horário corrido (sem intervalo de almoço)"
+              : ""
+          }));
+        }
+
+        // Caso contrário, expande conforme padrão do perito / modoTurnos selecionado
+        const horaManha = (pp && pp.horaInicioManha) ? pp.horaInicioManha : "08:00";
+        const vagasManha = qtdLinha !== null
+          ? qtdLinha
+          : (contexto.quantidade !== null ? contexto.quantidade : ((pp && pp.vagasManha) ? pp.vagasManha : regrasPerito.procsPorPauta));
+        const varaManha = varasLinha[0] || contexto.vara || (pp && pp.varaManha) || varaPadrao;
+
+        const horaTermManha = calcularHorarioTermino(horaManha, intEfetivo, vagasManha);
+        const ehCorridoData = dirCorrido.temCorridoSemData || dirCorrido.datasCorrido.includes(dataIso);
+        const pausaAlmoco = (pp && pp.pausaAlmocoMin !== undefined && pp.pausaAlmocoMin !== null)
+          ? parseInt(pp.pausaAlmocoMin, 10)
+          : (dirCorrido.pausaRestanteMin !== null ? dirCorrido.pausaRestanteMin : 60);
+
+        const horaTardeNormal = (pp && pp.horaInicioTarde)
+          ? pp.horaInicioTarde
+          : (somarMinutosHora(horaTermManha, Number.isFinite(pausaAlmoco) ? pausaAlmoco : 60) || "13:00");
+        const horaTarde = ehCorridoData && horaTermManha && horaTermManha !== "--:--"
+          ? horaTermManha
+          : horaTardeNormal;
+        const vagasTarde = qtdLinha !== null
+          ? qtdLinha
+          : (contexto.quantidade !== null ? contexto.quantidade : ((pp && pp.vagasTarde) ? pp.vagasTarde : vagasManha));
+        const varaTarde = varasLinha.length > 1
+          ? varasLinha[1]
+          : (varasLinha[0] || contexto.vara || (pp && pp.varaTarde) || varaPadrao);
+
+        if (efetivoModo === "manha_tarde") {
+          return [
+            { horaInicio: horaManha, quantidade: vagasManha, vara: varaManha, observacoes: "" },
+            {
+              horaInicio: horaTarde,
+              quantidade: vagasTarde,
+              vara: varaTarde,
+              observacoes: ehCorridoData ? "Horário corrido (sem intervalo de almoço)" : ""
+            }
+          ];
+        }
+        if (efetivoModo === "tarde") {
+          return [
+            {
+              horaInicio: horaTarde,
+              quantidade: vagasTarde,
+              vara: varaTarde,
+              observacoes: ehCorridoData ? "Horário corrido (sem intervalo de almoço)" : ""
+            }
+          ];
+        }
+        return [
+          {
+            horaInicio: horaManha,
+            quantidade: vagasManha,
+            vara: varaManha,
+            observacoes: ehCorridoData ? "Horário corrido (sem intervalo de almoço)" : ""
+          }
+        ];
+      };
+
+      // Cruzamento: cada data x blocos/turnos resolvidos
+      datas.forEach((dataIso) => {
+        const blocos = criarListaBlocosParaData(dataIso);
+        blocos.forEach((bloco) => {
+          const regrasBloco = obterRegrasVaraPerito(peritoEfetivoObj, bloco.vara);
           const canonica = prepararPautaCanonica({
             peritoNome: peritoEfetivoNome,
-            especialidade: regrasPerito.especialidade,
+            especialidade: regrasBloco.especialidade || regrasPerito.especialidade,
             data: dataIso,
-            vara: varaEscolhida,
+            vara: bloco.vara,
             local: localInfo.local,
             endereco: localInfo.endereco,
-            quantidade: qtdEfetiva,
+            quantidade: bloco.quantidade,
             intervaloMin: intEfetivo,
-            horaInicio: horaStr,
+            horaInicio: bloco.horaInicio,
             situacao: situacaoEfetiva,
-            observacoes: ""
-          }, bancoPeritos);
+            observacoes: bloco.observacoes || ""
+          }, bancoPeritos, listaFeriados);
 
           const pendencias = calcularPendenciasPauta(canonica);
           const confianca = pendencias.length > 0
             ? "baixa"
-            : ((peritoEfetivoObj && qtdLinha !== null && horariosLinha.length > 0) ? "alta" : "media");
+            : ((peritoEfetivoObj && (qtdLinha !== null || pp) && (horariosExplicitos.length > 0 || pp)) ? "alta" : "media");
 
           canonica._meta = {
             pendencias,
@@ -1097,12 +1763,21 @@
             selecionada: true
           };
 
-          pautasExtraidas.push(canonica);
+          inserirOuMesclarPautaExtraida(pautasExtraidas, canonica, {
+            localExplicito: temPalavraLocal,
+            qtdExplicita: qtdLinha !== null,
+            trechoOrigem: linha
+          });
         });
       });
 
-      // Se a linha citou múltiplas varas sem múltiplos horários (ex: "dia 10/12, 19ª e 31ª Varas, 08h"), apenas avisa caso o usuário queira duplicar manualmente
-      if (varasParaGerar.length > 1 && horariosParaGerar.length === 1) {
+      // Aplica diretiva "horário corrido" caso tenha citado outra data na mesma linha
+      if (dirCorrido.datasCorrido.length > 0) {
+        aplicarHorarioCorridoNasPautas(pautasExtraidas, dirCorrido.datasCorrido, peritoEfetivoNome);
+      }
+
+      // Se a linha citou múltiplas varas sem múltiplos horários
+      if (varasParaGerar.length > 1 && horariosExplicitos.length === 1) {
         alertas.push(`Linha citou mais de uma Vara (${varasParaGerar.map((v) => v + "ª").join(" e ")}) para um único horário; verifique se deseja dividir.`);
       }
     }
@@ -1127,6 +1802,7 @@
     ehLocalFora,
     verificarEhFeriado,
     calcularHorarioTermino,
+    somarMinutosHora,
     calcularDataLimite8DiasUteis,
     calcularPrazoDias,
     classificarCategoriaPericia,
