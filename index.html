@@ -10,7 +10,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="manifest" href="manifest.json">
-  <link rel="icon" type="image/png" href="./icon-192.png">
+  <link rel="icon" type="image/svg+xml" href="./icon.svg">
 
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -126,8 +126,10 @@
         </div>
       </div>
       <div class="header-right">
-        <button type="button" class="btn-icon" id="btnHeaderSyncPautas" title="Recarregar pautas">🔄</button>
-        <button type="button" class="btn-icon" id="btnHeaderLogout" title="Sair / Trocar usuário">🚪</button>
+        <button type="button" class="btn-icon" id="btnHeaderPeritos" title="Diretório de Peritos" aria-label="Diretório de Peritos">👨‍⚕️</button>
+        <button type="button" class="btn-icon" id="btnHeaderConfig" title="Configurações e Tema" aria-label="Configurações e Tema">⚙️</button>
+        <button type="button" class="btn-icon" id="btnHeaderSyncPautas" title="Recarregar pautas" aria-label="Recarregar pautas">🔄</button>
+        <button type="button" class="btn-icon" id="btnHeaderLogout" title="Sair / Trocar usuário" aria-label="Sair">🚪</button>
       </div>
     </header>
 
@@ -138,6 +140,7 @@
         <div class="user-details">
           <span class="user-name" id="lblUsuarioNome">Servidor Autorizado</span>
           <span class="user-scope" id="lblEscopoRestricao">🔒 Acesso restrito à Subseção configurada</span>
+          <span class="sync-timestamp" id="lblUltimaSync">Sync: aguardando...</span>
         </div>
       </div>
       <span class="badge-role" id="lblPerfilRole">Editor</span>
@@ -167,6 +170,12 @@
       </button>
     </nav>
 
+    <!-- BANNER DISCRETO DE ATUALIZAÇÃO DO PWA -->
+    <div id="bannerAtualizacaoPwa" class="pwa-update-banner" style="display: none;">
+      <span>✨ Nova versão do Maestro PJe disponível</span>
+      <button type="button" class="btn btn-sm btn-primary" id="btnAplicarAtualizacaoPwa">Atualizar</button>
+    </div>
+
     <!-- CONTEÚDO PRINCIPAL -->
     <main class="main-content">
       
@@ -185,6 +194,14 @@
           <button type="button" class="btn-circle" id="btnMesProximo" data-delta="1">▶</button>
         </div>
 
+        <!-- FILTRO POR VARA NO RESUMO -->
+        <div class="dash-filter-bar">
+          <label for="filtroVaraDashboard">⚖️ Vara:</label>
+          <select id="filtroVaraDashboard" class="form-select-sm" aria-label="Filtrar resumo por Vara">
+            <option value="">Todas as Varas Autorizadas</option>
+          </select>
+        </div>
+
         <!-- CARDS DE KPIS PRINCIPAIS -->
         <div class="kpi-grid">
           <div class="kpi-card kpi-total">
@@ -194,19 +211,19 @@
             <div class="kpi-hint" id="kpiTotalPautas">0 pautas cadastradas</div>
           </div>
 
-          <div class="kpi-card kpi-marcadas">
+          <div class="kpi-card kpi-marcadas is-clickable" data-dash-drill="marcado" title="Toque para abrir apenas pautas Marcadas na Lista">
             <div class="kpi-icon">🟢</div>
             <div class="kpi-value" id="kpiMarcadas">0</div>
-            <div class="kpi-label">Perícias Marcadas</div>
+            <div class="kpi-label">Perícias Marcadas ➔</div>
             <div class="kpi-progress">
               <div class="progress-bar bar-green" id="barMarcadas" style="width: 0%;"></div>
             </div>
           </div>
 
-          <div class="kpi-card kpi-pendentes">
+          <div class="kpi-card kpi-pendentes is-clickable" data-dash-drill="pendente" title="Toque para abrir pautas Pendentes (Não marcadas / Em marcação)">
             <div class="kpi-icon">🟡</div>
             <div class="kpi-value" id="kpiPendentes">0</div>
-            <div class="kpi-label">Perícias Pendentes</div>
+            <div class="kpi-label">Perícias Pendentes ➔</div>
             <div class="kpi-progress">
               <div class="progress-bar bar-yellow" id="barPendentes" style="width: 0%;"></div>
             </div>
@@ -218,6 +235,15 @@
             <div class="kpi-label">Taxa de Ocupação</div>
             <div class="kpi-hint">Marcadas vs Disponíveis</div>
           </div>
+        </div>
+
+        <!-- ALERTA DE PRAZOS CRÍTICOS (8 DIAS ÚTEIS) -->
+        <div id="cardAlertasPrazoDashboard" class="prazo-alert-card" style="display: none;">
+          <div class="prazo-alert-info">
+            <strong>⏳ Prazos Críticos (8 dias úteis):</strong>
+            <span id="lblResumoAlertasPrazo">0 pauta(s) aguardando marcação com prazo próximo ou vencido</span>
+          </div>
+          <button type="button" class="btn btn-sm btn-outline" id="btnVerPrazosCriticos">Ver Lista ➔</button>
         </div>
 
         <!-- DISTRIBUIÇÃO POR VARAS DA SUBSEÇÃO -->
@@ -269,6 +295,9 @@
           <button type="button" class="btn btn-outline" id="btnQuickVerPautas">
             <span>🔍 Ver Lista Completa</span>
           </button>
+          <button type="button" class="btn btn-outline quick-action-full" id="btnQuickPeritos">
+            <span>👨‍⚕️ Consultar Diretório de Peritos</span>
+          </button>
         </div>
 
       </section>
@@ -293,8 +322,10 @@
           </div>
           <div class="dia-quick-row">
             <button type="button" class="btn btn-outline btn-sm" id="btnDiaHoje">📍 Hoje</button>
-            <button type="button" class="btn btn-outline btn-sm" id="btnDiaProximoComPauta">⏭️ Próx. c/ Pauta</button>
-            <button type="button" class="btn btn-outline btn-sm" id="btnToggleCalendarioDia">🗓️ Ocultar Cal.</button>
+            <button type="button" class="btn btn-outline btn-sm" id="btnDiaProximoComPauta">⏭️ Próx.</button>
+            <button type="button" class="btn btn-outline btn-sm" id="btnToggleCalendarioDia">🗓️ Ocultar</button>
+            <button type="button" class="btn btn-outline btn-sm" id="btnCompartilharDiaWpp" title="Compartilhar resumo do dia no WhatsApp">📲 Dia</button>
+            <button type="button" class="btn btn-outline btn-sm" id="btnAutoRefreshDia" title="Atualizar a cada 60s">🔄 Auto: OFF</button>
           </div>
         </div>
 
@@ -337,6 +368,9 @@
           </div>
         </div>
 
+        <!-- OCUPAÇÃO DE SALAS FÍSICAS NO PRÉDIO -->
+        <div id="diaSalasStrip" class="dia-salas-strip"></div>
+
         <!-- MODO DE EXIBIÇÃO & FILTROS DO DIA -->
         <div class="filters-card">
           <div class="filter-pills dia-view-pills">
@@ -353,6 +387,25 @@
             </div>
             <select id="filtroVaraPorDia" class="form-select-sm" aria-label="Filtrar por Vara no dia">
               <option value="">Todas as Varas</option>
+            </select>
+          </div>
+
+          <div class="filter-row" style="margin-top: 8px;">
+            <select id="filtroSituacaoPorDia" class="form-select-sm" aria-label="Filtrar Escala por situação">
+              <option value="todos">Escala: Todas situações</option>
+              <option value="marcado">🟢 Marcadas</option>
+              <option value="nao_marcado">⚪ Não marcadas</option>
+              <option value="em_marcacao">🟡 Em marcação</option>
+              <option value="pendente">⚠️ Pendentes</option>
+            </select>
+            <select id="filtroStatusPjePorDia" class="form-select-sm" aria-label="Filtrar Pauta PJe por status">
+              <option value="todos">PJe: Todos status</option>
+              <option value="AGUARDANDO_CHEGADA">⏳ Aguardando</option>
+              <option value="PRESENTE">🟢 Presentes</option>
+              <option value="CHAMADO">📢 Chamados</option>
+              <option value="EM_ATENDIMENTO">🩺 Em Atendimento</option>
+              <option value="CONCLUIDO">✅ Concluídos</option>
+              <option value="AUSENTE_CHAMADO">❌ Ausentes</option>
             </select>
           </div>
         </div>
@@ -390,27 +443,55 @@
         <div class="filters-card">
           <div class="search-box">
             <span class="search-icon">🔍</span>
-            <input type="text" id="filtroTexto" placeholder="Buscar perito, vara, data...">
+            <input type="text" id="filtroTexto" placeholder="Buscar perito, vara, data, local...">
             <button type="button" class="btn-clear" id="btnLimparBusca" style="display:none;">✕</button>
           </div>
 
           <div class="filter-pills">
             <button type="button" class="pill active" data-filtro="todos">Todas (<span id="pillCountTodos">0</span>)</button>
-            <button type="button" class="pill pill-green" data-filtro="marcado">Marcadas (<span id="pillCountMarcadas">0</span>)</button>
-            <button type="button" class="pill pill-yellow" data-filtro="pendente">Pendentes (<span id="pillCountPendentes">0</span>)</button>
+            <button type="button" class="pill pill-green" data-filtro="marcado">🟢 Marcadas (<span id="pillCountMarcadas">0</span>)</button>
+            <button type="button" class="pill pill-slate" data-filtro="nao_marcado">⚪ Não marcadas (<span id="pillCountNaoMarcadas">0</span>)</button>
+            <button type="button" class="pill pill-amber" data-filtro="em_marcacao">🟡 Em marcação (<span id="pillCountEmMarcacao">0</span>)</button>
+            <button type="button" class="pill pill-yellow" data-filtro="pendente">⚠️ Pendentes (<span id="pillCountPendentes">0</span>)</button>
           </div>
 
           <div class="filter-row">
-            <select id="filtroVara" class="form-select-sm">
+            <select id="filtroVara" class="form-select-sm" aria-label="Filtrar por Vara">
               <option value="">Todas as Varas</option>
             </select>
 
-            <select id="filtroCategoria" class="form-select-sm">
+            <select id="filtroPeriodoPautas" class="form-select-sm" aria-label="Filtrar por Período">
+              <option value="todos">📅 Todas as datas</option>
+              <option value="proximas">⏭️ A partir de hoje</option>
+              <option value="mes_atual">🗓️ Mês selecionado</option>
+              <option value="prazo_critico">⏳ Prazo crítico (≤ 5d)</option>
+            </select>
+          </div>
+
+          <div class="filter-row" style="margin-top: 8px;">
+            <select id="filtroLocalPautas" class="form-select-sm" aria-label="Filtrar por Local">
+              <option value="">📍 Todos os Locais</option>
+              <option value="predio">🏛️ No Prédio JF</option>
+              <option value="fora">🏥 Externa / Fora</option>
+            </select>
+
+            <select id="filtroCategoria" class="form-select-sm" aria-label="Filtrar por Categoria">
               <option value="">Todas as Categorias</option>
               <option value="medica">Médica</option>
               <option value="social">Social</option>
               <option value="outras">Outras</option>
             </select>
+          </div>
+
+          <div class="filter-sort-row">
+            <select id="filtroOrdenacaoPautas" class="form-select-sm" aria-label="Ordenar pautas">
+              <option value="data_asc">Ordenar: Data mais próxima ↑</option>
+              <option value="data_desc">Ordenar: Data mais distante ↓</option>
+              <option value="perito_asc">Ordenar: Perito (A–Z)</option>
+              <option value="vagas_desc">Ordenar: Mais vagas</option>
+              <option value="prazo_asc">Ordenar: Prazo mais urgente</option>
+            </select>
+            <button type="button" class="btn btn-outline btn-sm" id="btnResetFiltrosPautas" style="display: none;">🧹 Limpar</button>
           </div>
         </div>
 
@@ -547,8 +628,38 @@
             <span class="badge-subsecao-lock" id="lblRelatorioSubsecao">Subseção</span>
           </div>
           <p class="text-sm text-muted">
-            Gere relatórios oficiais das pautas, perícias marcadas e pendentes restritos à sua subseção.
+            Gere relatórios oficiais das pautas, perícias marcadas e não marcadas filtrando por Vara, Situação e Período.
           </p>
+        </div>
+
+        <!-- FILTROS DO RELATÓRIO -->
+        <div class="filters-card">
+          <div class="section-header" style="margin-bottom: 8px;">
+            <h4>🎯 Filtros do Relatório</h4>
+          </div>
+          <div class="filter-row">
+            <select id="relFiltroPeriodo" class="form-select-sm" aria-label="Período do relatório">
+              <option value="mes_selecionado" selected>🗓️ Mês selecionado</option>
+              <option value="todos">📅 Todas as pautas</option>
+              <option value="proximas">⏭️ A partir de hoje</option>
+            </select>
+            <input type="month" id="relFiltroMesInput" class="form-select-sm" aria-label="Mês de referência do relatório">
+          </div>
+          <div class="filter-row" style="margin-top: 8px;">
+            <select id="relFiltroVara" class="form-select-sm" aria-label="Vara do relatório">
+              <option value="">Todas as Varas Autorizadas</option>
+            </select>
+            <select id="relFiltroSituacao" class="form-select-sm" aria-label="Situação do relatório">
+              <option value="todos">Todas as situações</option>
+              <option value="marcado">🟢 Somente Marcadas</option>
+              <option value="nao_marcado">⚪ Somente Não marcadas</option>
+              <option value="em_marcacao">🟡 Somente Em marcação</option>
+              <option value="pendente">⚠️ Somente Pendentes</option>
+            </select>
+          </div>
+          <div class="rel-filter-summary" id="lblResumoFiltroRelatorio">
+            0 pauta(s) • 0 vagas selecionadas
+          </div>
         </div>
 
         <!-- CARD 1: RELATÓRIO OFICIAL EM PDF -->
@@ -556,13 +667,16 @@
           <div class="report-icon-box icon-pdf">📄</div>
           <div class="report-details">
             <h5>Relatório de Pautas (PDF)</h5>
-            <p>Formato oficial institucional para impressão ou envio com resumo de marcadas e pendentes.</p>
+            <p>Formato oficial institucional com resumo de marcadas e pendentes conforme os filtros selecionados acima.</p>
             <div class="report-buttons">
               <button type="button" class="btn btn-primary btn-sm" id="btnRelPdfMes">
-                <span>Imprimir / Salvar PDF (Mês Atual)</span>
+                <span>🖨️ Gerar PDF Filtrado</span>
               </button>
               <button type="button" class="btn btn-outline btn-sm" id="btnRelPdfCompleto">
-                <span>PDF de Todas as Pautas</span>
+                <span>📚 PDF Todas as Datas</span>
+              </button>
+              <button type="button" class="btn btn-outline btn-sm" id="btnRelPdfPautaDia">
+                <span>📋 PDF Pauta PJe do Dia</span>
               </button>
             </div>
           </div>
@@ -573,7 +687,7 @@
           <div class="report-icon-box icon-csv">📊</div>
           <div class="report-details">
             <h5>Planilha de Pautas (CSV / Excel)</h5>
-            <p>Exportação de dados tabulares para acompanhamento de pautas, vagas e perícias.</p>
+            <p>Exportação de dados tabulares aplicando exatamente os filtros de Vara, Situação e Período.</p>
             <div class="report-buttons">
               <button type="button" class="btn btn-secondary btn-sm" id="btnRelCsv">
                 <span>Baixar Planilha CSV</span>
@@ -587,7 +701,7 @@
           <div class="report-icon-box icon-wpp">💬</div>
           <div class="report-details">
             <h5>Resumo para WhatsApp / Mensagens</h5>
-            <p>Texto pronto formatado para envio a juízes, diretores de secretaria e equipes.</p>
+            <p>Texto pronto formatado com os filtros selecionados para envio a juízes, diretores e equipe.</p>
             <div class="report-buttons">
               <button type="button" class="btn btn-outline btn-sm" id="btnRelCopiarWpp">
                 <span>Copiar Resumo Textual</span>
@@ -618,6 +732,164 @@
     </main>
 
   </div>
+
+  <!-- ========================================================== -->
+  <!-- MODAL 1: EDITAR PAUTA EXISTENTE                            -->
+  <!-- ========================================================== -->
+  <div id="modalEditarPautaMobile" class="app-modal" role="dialog" aria-modal="true" aria-labelledby="tituloModalEditarPauta">
+    <div class="app-modal-sheet">
+      <div class="app-modal-header">
+        <h4 id="tituloModalEditarPauta">✏️ Editar Pauta da Escala</h4>
+        <button type="button" class="btn-clear" id="btnFecharModalEditarPauta" aria-label="Fechar">✕</button>
+      </div>
+      <form id="formEditarPautaMobile" class="app-modal-body">
+        <input type="hidden" id="editPautaId">
+        <input type="hidden" id="editPautaChaveOrig">
+
+        <div class="wpp-field">
+          <label for="editPeritoNome">Perito(a) Oficial *</label>
+          <input type="text" id="editPeritoNome" list="datalistPeritosMobile" required placeholder="Nome completo do perito">
+        </div>
+
+        <div class="wpp-field">
+          <label for="editEspecialidade">Especialidade / Atuação</label>
+          <input type="text" id="editEspecialidade" placeholder="Ex: Clínica Geral / Ortopedia">
+        </div>
+
+        <div class="wpp-card-grid-2">
+          <div class="wpp-field">
+            <label for="editData">Data *</label>
+            <input type="date" id="editData" required>
+          </div>
+          <div class="wpp-field">
+            <label for="editHoraInicio">Hora Início *</label>
+            <input type="time" id="editHoraInicio" required>
+          </div>
+        </div>
+
+        <div class="wpp-card-grid-3">
+          <div class="wpp-field">
+            <label for="editQuantidade">Vagas *</label>
+            <input type="number" id="editQuantidade" min="1" max="200" required>
+          </div>
+          <div class="wpp-field">
+            <label for="editIntervaloMin">Interv. (min)</label>
+            <input type="number" id="editIntervaloMin" min="1" max="120" required>
+          </div>
+          <div class="wpp-field">
+            <label for="editVara">Vara *</label>
+            <select id="editVara" required></select>
+          </div>
+        </div>
+
+        <div class="wpp-card-grid-2">
+          <div class="wpp-field">
+            <label for="editLocal">Local *</label>
+            <select id="editLocal"></select>
+          </div>
+          <div class="wpp-field">
+            <label for="editSituacao">Situação *</label>
+            <select id="editSituacao">
+              <option value="Não marcado">⚪ Não marcado</option>
+              <option value="Em marcação">🟡 Em marcação</option>
+              <option value="Marcado">🟢 Marcado</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="boxEditEndereco" class="wpp-endereco-box" style="display: none;">
+          <div class="wpp-field" style="margin-bottom: 0;">
+            <label for="editEndereco">📍 Endereço Externo *</label>
+            <input type="text" id="editEndereco" placeholder="Rua / Av. / Clínica / Consultório">
+          </div>
+        </div>
+
+        <div class="wpp-field">
+          <label for="editObservacoes">Observações</label>
+          <input type="text" id="editObservacoes" placeholder="Opcional">
+        </div>
+
+        <div class="wpp-calc-strip">
+          <span>⏰ Término: <b id="editCalcTermino">--:--</b></span>
+          <span>📅 Limite (8d úteis): <b id="editCalcLimite">-</b></span>
+        </div>
+      </form>
+      <div class="app-modal-footer">
+        <button type="button" class="btn btn-outline btn-sm" id="btnCancelarModalEditarPauta">Cancelar</button>
+        <button type="submit" form="formEditarPautaMobile" class="btn btn-primary btn-sm" id="btnSalvarModalEditarPauta">☁️ Salvar Alterações</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================== -->
+  <!-- MODAL 2: DIRETÓRIO DE PERITOS CADASTRADOS                  -->
+  <!-- ========================================================== -->
+  <div id="modalPeritosMobile" class="app-modal" role="dialog" aria-modal="true" aria-labelledby="tituloModalPeritos">
+    <div class="app-modal-sheet">
+      <div class="app-modal-header">
+        <h4 id="tituloModalPeritos">👨‍⚕️ Diretório de Peritos</h4>
+        <button type="button" class="btn-clear" id="btnFecharModalPeritos" aria-label="Fechar">✕</button>
+      </div>
+      <div class="app-modal-body">
+        <div class="search-box" style="margin-bottom: 8px;">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="filtroBuscaPeritosModal" placeholder="Buscar perito, especialidade, endereço...">
+        </div>
+        <div class="text-xs text-muted" id="lblTotalPeritosModal" style="margin-bottom: 10px;">0 perito(s)</div>
+        <div id="listaPeritosModal"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================== -->
+  <!-- MODAL 3: CONFIGURAÇÕES, CHAVE AES & TEMA                   -->
+  <!-- ========================================================== -->
+  <div id="modalConfigMobile" class="app-modal" role="dialog" aria-modal="true" aria-labelledby="tituloModalConfig">
+    <div class="app-modal-sheet">
+      <div class="app-modal-header">
+        <h4 id="tituloModalConfig">⚙️ Configurações &amp; Segurança</h4>
+        <button type="button" class="btn-clear" id="btnFecharModalConfig" aria-label="Fechar">✕</button>
+      </div>
+      <div class="app-modal-body">
+        <div class="cfg-section">
+          <label class="wpp-code-label">🎨 Tema da Interface</label>
+          <div class="theme-toggle-group">
+            <button type="button" class="theme-btn active" data-tema="auto">📱 Automático</button>
+            <button type="button" class="theme-btn" data-tema="light">☀️ Claro</button>
+            <button type="button" class="theme-btn" data-tema="dark">🌙 Escuro</button>
+          </div>
+        </div>
+
+        <div class="cfg-section">
+          <label for="cfgCodigoConexao" class="wpp-code-label">⚡ Atualizar por Código (MAESTRO::...)</label>
+          <div class="wpp-code-row">
+            <input type="text" id="cfgCodigoConexao" class="form-control wpp-code-input" placeholder="Cole novo código do Dashboard...">
+            <button type="button" class="btn btn-primary btn-sm" id="btnCfgAplicarCodigo">Aplicar</button>
+          </div>
+        </div>
+
+        <div class="cfg-section">
+          <div class="wpp-field">
+            <label for="cfgChaveNuvem">🔐 Atualizar Chave AES-256 (sem sair)</label>
+            <input type="password" id="cfgChaveNuvem" placeholder="Digite a nova chave AES-256 da Vara">
+          </div>
+          <label class="wpp-checkbox-inline" style="margin-bottom: 10px;">
+            <input type="checkbox" id="chkCfgLembrarChave">
+            <span>Salvar chave AES neste aparelho</span>
+          </label>
+          <button type="button" class="btn btn-secondary btn-sm btn-block" id="btnCfgSalvarChave">🔑 Salvar Chave e Sincronizar</button>
+        </div>
+
+        <div class="cfg-section">
+          <label class="wpp-code-label">ℹ️ Diagnóstico da Sessão</label>
+          <div id="cfgInfoSistema" class="cfg-info-box"></div>
+          <button type="button" class="btn btn-outline btn-sm btn-block" id="btnCfgLimparCache" style="margin-top: 10px;">🧹 Limpar Cache do App e Recarregar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="maestroToastContainer" class="toast-container" aria-live="polite"></div>
 
   <script src="whatsapp-parser.js"></script>
   <script src="app.js"></script>

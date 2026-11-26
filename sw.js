@@ -6,14 +6,15 @@
  *  - Navegação / Share Target: Network-First com fallback para ./index.html.
  *  - Assets estáticos locais: Stale-While-Revalidate mantendo atualização automática silenciosa.
  */
-const CACHE_NAME = 'maestro-pje-mobile-v8';
+const CACHE_NAME = 'maestro-pje-mobile-v9';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
   './styles.css',
   './whatsapp-parser.js',
   './app.js',
-  './manifest.json'
+  './manifest.json',
+  './icon.svg'
 ];
 
 self.addEventListener('install', (event) => {

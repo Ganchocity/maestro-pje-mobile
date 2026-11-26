@@ -358,6 +358,7 @@
   let anoAtivo = agoraInicial.getFullYear();
   let mesAtivo = agoraInicial.getMonth();
   let filtroSituacaoAtivo = "todos";
+  let filtroVaraDashboard = "";
   let textoCompartilhadoPendente = null;
 
   let dataSelecionadaPorDia = obterHojeIsoLocal();
@@ -365,7 +366,123 @@
   let calDiaMes = agoraInicial.getMonth();
   let modoVisualizacaoDia = "tudo"; // "tudo" | "escala" | "pauta"
   let calendarioDiaVisivel = true;
+  let ultimaSyncEscalaTs = 0;
   let ultimaSyncPautaPjeTs = 0;
+  let autoRefreshDiaAtivo = false;
+  let autoRefreshDiaTimer = null;
+  let temaAtualMobile = "auto";
+  let pautaEmEdicaoModal = null;
+
+  function mostrarToast(msg, tipo = "info", duracaoMs = 3200) {
+    const container = document.getElementById("maestroToastContainer");
+    if (!container || !msg) return;
+    const toast = document.createElement("div");
+    toast.className = `maestro-toast toast-${tipo}`;
+    toast.textContent = String(msg);
+    container.appendChild(toast);
+    while (container.children.length > 3) {
+      container.removeChild(container.firstChild);
+    }
+    setTimeout(() => {
+      toast.classList.add("is-hiding");
+      setTimeout(() => {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+      }, 260);
+    }, Math.max(1200, duracaoMs));
+  }
+
+  function aplicarTemaMobile(tema) {
+    const valido = (tema === "light" || tema === "dark" || tema === "auto") ? tema : "auto";
+    temaAtualMobile = valido;
+    const root = document.documentElement;
+    if (valido === "auto") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", valido);
+    try { localStorage.setItem("maestro_mobile_theme", valido); } catch (e) {}
+    document.querySelectorAll(".theme-toggle-group .theme-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.getAttribute("data-tema") === valido);
+    });
+  }
+
+  function inicializarTemaMobile() {
+    let salvo = "auto";
+    try {
+      const t = localStorage.getItem("maestro_mobile_theme");
+      if (t === "light" || t === "dark" || t === "auto") salvo = t;
+    } catch (e) {}
+    aplicarTemaMobile(salvo);
+  }
+
+  function formatarHoraCurtaTs(ts) {
+    if (!ts || !Number.isFinite(Number(ts))) return "";
+    const d = new Date(Number(ts));
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function atualizarIndicadorSync() {
+    const el = document.getElementById("lblUltimaSync");
+    if (!el) return;
+    if (!ultimaSyncEscalaTs && !ultimaSyncPautaPjeTs) {
+      el.textContent = "Sync: aguardando...";
+      return;
+    }
+    const hEscala = formatarHoraCurtaTs(ultimaSyncEscalaTs || Date.now());
+    const hPje = ultimaSyncPautaPjeTs ? formatarHoraCurtaTs(ultimaSyncPautaPjeTs) : "";
+    el.textContent = hPje ? `🔄 Sync: ${hEscala} • PJe: ${hPje}` : `🔄 Sync: ${hEscala}`;
+  }
+
+  function classificarSituacaoFiltro(situacao) {
+    const s = removerAcentosLowerMobile(situacao);
+    if (s.includes("em marca")) return "em_marcacao";
+    if (s.includes("canc")) return "cancelado";
+    if (s.includes("nao marc") || s.includes("pend") || s.includes("abert") || s.includes("reserv")) return "nao_marcado";
+    if (s.includes("marc")) return "marcado";
+    return "nao_marcado";
+  }
+
+  function correspondeFiltroSituacao(pauta, filtro) {
+    if (!filtro || filtro === "todos") return true;
+    const cls = classificarSituacaoFiltro(pauta?.situacao);
+    if (filtro === "pendente") return cls === "nao_marcado" || cls === "em_marcacao";
+    return cls === filtro;
+  }
+
+  function resolverPrazoInfoPauta(p) {
+    if (!p || !p.data || !ehSituacaoPendente(p.situacao)) return null;
+    const dataLimite = p.dataLimite || (Parser ? Parser.calcularDataLimite8DiasUteis(p.data) : "");
+    if (!dataLimite) return null;
+    const dias = Parser ? Parser.calcularPrazoDias(dataLimite) : p.prazoDias;
+    if (dias === null || dias === undefined || isNaN(dias)) return null;
+    return { dataLimite, prazoDias: Number(dias) };
+  }
+
+  function obterBadgePrazoPautaHtml(p) {
+    const info = resolverPrazoInfoPauta(p);
+    if (!info) return "";
+    const d = info.prazoDias;
+    let cls = "is-normal";
+    let texto = `⏳ Limite ${formatarDataBr(info.dataLimite)} (${d}d)`;
+    if (d < 0) {
+      cls = "is-vencido";
+      texto = `🚨 Prazo vencido há ${Math.abs(d)}d (${formatarDataBr(info.dataLimite)})`;
+    } else if (d <= 5) {
+      cls = "is-urgente";
+      texto = d === 0
+        ? `⚠️ Prazo vence HOJE (${formatarDataBr(info.dataLimite)})`
+        : `⚠️ Prazo crítico: ${d}d (${formatarDataBr(info.dataLimite)})`;
+    }
+    return `<div class="pauta-prazo-badge ${cls}">${escapeHtml(texto)}</div>`;
+  }
+
+  function normalizarChavePeritoReconcil(nome) {
+    const raw = String(nome || "").trim();
+    if (!raw) return "";
+    if (Parser && typeof Parser.encontrarPeritoNoTexto === "function") {
+      const m = Parser.encontrarPeritoNoTexto(raw, bancoPeritosMobile);
+      if (m && m.nome) return removerAcentosLowerMobile(m.nome);
+    }
+    return removerAcentosLowerMobile(raw);
+  }
 
   function ehAmbienteExtensaoChrome() {
     return typeof chrome !== "undefined" && Boolean(chrome.storage && chrome.storage.local);
@@ -479,6 +596,7 @@
   // 3. INICIALIZAÇÃO, EVENTOS (CSP-SAFE) E GERENCIAMENTO DE SESSÃO
   // =========================================================================
   document.addEventListener("DOMContentLoaded", () => {
+    inicializarTemaMobile();
     vincularEventosUI();
     capturarShareTargetUrl();
     carregarSessaoSalva();
@@ -514,12 +632,15 @@
       });
     }
 
-    // Header
+    // Header & Banner PWA
     document.getElementById("selectHeaderSubsecao")?.addEventListener("change", (e) => {
       trocarSubsecaoMobile(e.target.value);
     });
+    document.getElementById("btnHeaderPeritos")?.addEventListener("click", abrirModalPeritos);
+    document.getElementById("btnHeaderConfig")?.addEventListener("click", abrirModalConfig);
     document.getElementById("btnHeaderSyncPautas")?.addEventListener("click", () => window.sincronizarPautas());
     document.getElementById("btnHeaderLogout")?.addEventListener("click", () => window.fazerLogout());
+    document.getElementById("btnAplicarAtualizacaoPwa")?.addEventListener("click", () => window.location.reload());
 
     // Navegação de abas
     document.querySelectorAll(".main-tabs .tab-btn").forEach((btn) => {
@@ -529,13 +650,35 @@
       });
     });
 
-    // Visão Geral
+    // Visão Geral / Resumo
     document.getElementById("btnMesAnterior")?.addEventListener("click", () => window.alterarMes(-1));
     document.getElementById("btnMesProximo")?.addEventListener("click", () => window.alterarMes(1));
+    document.getElementById("filtroVaraDashboard")?.addEventListener("change", (e) => {
+      filtroVaraDashboard = e.target.value || "";
+      atualizarKpisDoMes();
+    });
+    document.querySelectorAll("#tabDashboard [data-dash-drill]").forEach((card) => {
+      card.addEventListener("click", () => {
+        const situacao = card.getAttribute("data-dash-drill") || "todos";
+        const vara = document.getElementById("filtroVaraDashboard")?.value || "";
+        abrirListaComFiltros({ situacao, vara, periodo: "mes_atual" });
+      });
+    });
+    document.getElementById("btnVerPrazosCriticos")?.addEventListener("click", () => {
+      const vara = document.getElementById("filtroVaraDashboard")?.value || "";
+      abrirListaComFiltros({ situacao: "pendente", vara, periodo: "prazo_critico", ordenacao: "prazo_asc" });
+    });
+    document.getElementById("listaVarasKpi")?.addEventListener("click", (e) => {
+      const row = e.target.closest("[data-vara-drill]");
+      if (!row) return;
+      const vara = row.getAttribute("data-vara-drill") || "";
+      abrirListaComFiltros({ situacao: "todos", vara, periodo: "mes_atual" });
+    });
     document.getElementById("btnQuickPorDia")?.addEventListener("click", () => window.trocarAba("tabPorDia"));
     document.getElementById("btnQuickWhatsapp")?.addEventListener("click", () => window.trocarAba("tabWhatsapp"));
     document.getElementById("btnQuickRelatorio")?.addEventListener("click", () => window.abrirRelatorioRapido());
     document.getElementById("btnQuickVerPautas")?.addEventListener("click", () => window.trocarAba("tabPautas"));
+    document.getElementById("btnQuickPeritos")?.addEventListener("click", abrirModalPeritos);
 
     // Por Dia (navegação, mini calendário, filtros e ações delegadas)
     document.getElementById("btnDiaAnterior")?.addEventListener("click", () => alterarDiaPorDia(-1));
@@ -546,6 +689,8 @@
     document.getElementById("btnDiaHoje")?.addEventListener("click", () => selecionarDataPorDia(obterHojeIsoLocal()));
     document.getElementById("btnDiaProximoComPauta")?.addEventListener("click", irParaProximoDiaComAtividade);
     document.getElementById("btnToggleCalendarioDia")?.addEventListener("click", alternarCalendarioPorDia);
+    document.getElementById("btnCompartilharDiaWpp")?.addEventListener("click", compartilharResumoDiaWhatsApp);
+    document.getElementById("btnAutoRefreshDia")?.addEventListener("click", alternarAutoRefreshDia);
     document.getElementById("btnCalDiaMesAnt")?.addEventListener("click", () => alterarMesCalendarioDia(-1));
     document.getElementById("btnCalDiaMesProx")?.addEventListener("click", () => alterarMesCalendarioDia(1));
 
@@ -573,6 +718,8 @@
       renderizarAbaPorDia();
     });
     document.getElementById("filtroVaraPorDia")?.addEventListener("change", () => renderizarAbaPorDia());
+    document.getElementById("filtroSituacaoPorDia")?.addEventListener("change", () => renderizarAbaPorDia());
+    document.getElementById("filtroStatusPjePorDia")?.addEventListener("change", () => renderizarAbaPorDia());
 
     document.getElementById("listaPautaPjeDoDia")?.addEventListener("click", (e) => {
       const btnProx = e.target.closest("[data-action='proximo-dia-atividade']");
@@ -588,6 +735,7 @@
         navigator.clipboard.writeText(proc).then(() => {
           const orig = btnCopy.textContent;
           btnCopy.textContent = "✓ Copiado";
+          mostrarToast("Número do processo copiado.", "success", 1800);
           setTimeout(() => { btnCopy.textContent = orig; }, 1400);
         }).catch(() => {});
       }
@@ -595,20 +743,27 @@
 
     document.getElementById("listaEscalaDoDia")?.addEventListener("click", (e) => {
       const btnProx = e.target.closest("[data-action='proximo-dia-atividade']");
-      if (btnProx) irParaProximoDiaComAtividade();
+      if (btnProx) {
+        irParaProximoDiaComAtividade();
+        return;
+      }
+      tratarCliqueAcaoPautaCard(e);
     });
 
     document.getElementById("listaPautasCards")?.addEventListener("click", (e) => {
       const badgeData = e.target.closest("[data-abrir-dia]");
-      if (!badgeData) return;
-      const dt = badgeData.getAttribute("data-abrir-dia");
-      if (dt && /^\d{4}-\d{2}-\d{2}$/.test(dt)) {
-        selecionarDataPorDia(dt);
-        window.trocarAba("tabPorDia");
+      if (badgeData) {
+        const dt = badgeData.getAttribute("data-abrir-dia");
+        if (dt && /^\d{4}-\d{2}-\d{2}$/.test(dt)) {
+          selecionarDataPorDia(dt);
+          window.trocarAba("tabPorDia");
+        }
+        return;
       }
+      tratarCliqueAcaoPautaCard(e);
     });
 
-    // Pautas (filtros)
+    // Pautas (filtros completos)
     document.getElementById("filtroTexto")?.addEventListener("input", () => window.filtrarPautas());
     document.getElementById("btnLimparBusca")?.addEventListener("click", () => window.limparBusca());
     document.querySelectorAll("#tabPautas .filter-pills .pill").forEach((pill) => {
@@ -618,7 +773,11 @@
       });
     });
     document.getElementById("filtroVara")?.addEventListener("change", () => window.filtrarPautas());
+    document.getElementById("filtroPeriodoPautas")?.addEventListener("change", () => window.filtrarPautas());
+    document.getElementById("filtroLocalPautas")?.addEventListener("change", () => window.filtrarPautas());
     document.getElementById("filtroCategoria")?.addEventListener("change", () => window.filtrarPautas());
+    document.getElementById("filtroOrdenacaoPautas")?.addEventListener("change", () => window.filtrarPautas());
+    document.getElementById("btnResetFiltrosPautas")?.addEventListener("click", resetarFiltrosListaPautas);
 
     // Aba WhatsApp
     document.getElementById("btnColarWhatsAppMobile")?.addEventListener("click", colarTextoWhatsApp);
@@ -639,6 +798,7 @@
     };
     document.getElementById("inpPeritoPadraoWpp")?.addEventListener("change", onConfigPadraoWppMobile);
     document.getElementById("inpPeritoPadraoWpp")?.addEventListener("input", atualizarResumoPadraoPeritoMobile);
+
     document.getElementById("selModoTurnosWpp")?.addEventListener("change", onConfigPadraoWppMobile);
 
     // Edição inline e delegação de eventos nos cards de importação WhatsApp
@@ -649,14 +809,64 @@
       listaCardsWpp.addEventListener("click", onClickCardImportacaoWpp);
     }
 
-    // Relatórios
-    document.getElementById("btnRelPdfMes")?.addEventListener("click", () => window.gerarRelatorioPdf("mes"));
+    // Relatórios + Filtros do Relatório
+    document.getElementById("relFiltroPeriodo")?.addEventListener("change", atualizarEstadoFiltrosRelatorio);
+    document.getElementById("relFiltroMesInput")?.addEventListener("change", atualizarResumoFiltroRelatorio);
+    document.getElementById("relFiltroVara")?.addEventListener("change", atualizarResumoFiltroRelatorio);
+    document.getElementById("relFiltroSituacao")?.addEventListener("change", atualizarResumoFiltroRelatorio);
+    document.getElementById("btnRelPdfMes")?.addEventListener("click", () => window.gerarRelatorioPdf("filtrado"));
     document.getElementById("btnRelPdfCompleto")?.addEventListener("click", () => window.gerarRelatorioPdf("completo"));
+    document.getElementById("btnRelPdfPautaDia")?.addEventListener("click", gerarRelatorioPdfPautaPjeDia);
     document.getElementById("btnRelCsv")?.addEventListener("click", () => window.exportarRelatorioCsv());
     document.getElementById("btnRelCopiarWpp")?.addEventListener("click", () => window.copiarResumoWhatsApp());
     document.getElementById("btnRelEnviarWpp")?.addEventListener("click", () => window.compartilharWhatsAppDireto());
     document.getElementById("btnImprimirPreviewRelatorio")?.addEventListener("click", () => window.print());
     document.getElementById("btnFecharPreviewRelatorio")?.addEventListener("click", () => window.fecharPreviewRelatorio());
+
+    // Modal Editar Pauta
+    document.getElementById("btnFecharModalEditarPauta")?.addEventListener("click", fecharModalEditarPauta);
+    document.getElementById("btnCancelarModalEditarPauta")?.addEventListener("click", fecharModalEditarPauta);
+    document.getElementById("modalEditarPautaMobile")?.addEventListener("click", (e) => {
+      if (e.target && e.target.id === "modalEditarPautaMobile") fecharModalEditarPauta();
+    });
+    document.getElementById("formEditarPautaMobile")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      salvarEdicaoPautaModal();
+    });
+    ["editData", "editHoraInicio", "editQuantidade", "editIntervaloMin"].forEach((id) => {
+      document.getElementById(id)?.addEventListener("input", atualizarPreviewCalcModalEditar);
+    });
+    document.getElementById("editLocal")?.addEventListener("change", atualizarVisibilidadeEnderecoModalEditar);
+
+    // Modal Diretório de Peritos
+    document.getElementById("btnFecharModalPeritos")?.addEventListener("click", fecharModalPeritos);
+    document.getElementById("modalPeritosMobile")?.addEventListener("click", (e) => {
+      if (e.target && e.target.id === "modalPeritosMobile") fecharModalPeritos();
+    });
+    document.getElementById("filtroBuscaPeritosModal")?.addEventListener("input", renderizarDiretorioPeritos);
+    document.getElementById("listaPeritosModal")?.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-ver-pautas-perito]");
+      if (!btn) return;
+      const nome = btn.getAttribute("data-ver-pautas-perito") || "";
+      fecharModalPeritos();
+      abrirListaComFiltros({ texto: nome, situacao: "todos", periodo: "todos" });
+    });
+
+    // Modal Configurações
+    document.getElementById("btnFecharModalConfig")?.addEventListener("click", fecharModalConfig);
+    document.getElementById("modalConfigMobile")?.addEventListener("click", (e) => {
+      if (e.target && e.target.id === "modalConfigMobile") fecharModalConfig();
+    });
+    document.querySelectorAll(".theme-toggle-group .theme-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const tema = btn.getAttribute("data-tema") || "auto";
+        aplicarTemaMobile(tema);
+        mostrarToast(`Tema alterado para: ${tema === "dark" ? "Escuro" : (tema === "light" ? "Claro" : "Automático")}.`, "success", 2000);
+      });
+    });
+    document.getElementById("btnCfgAplicarCodigo")?.addEventListener("click", aplicarCodigoConexaoNoModalConfig);
+    document.getElementById("btnCfgSalvarChave")?.addEventListener("click", salvarChaveNoModalConfig);
+    document.getElementById("btnCfgLimparCache")?.addEventListener("click", limparCachePwaERecarregar);
 
     // Conectividade / retorno online
     window.addEventListener("online", () => {
@@ -772,7 +982,8 @@
     }
     exibirTelaLogin();
   }
-async function revalidarSessaoNaNuvem() {
+
+  async function revalidarSessaoNaNuvem() {
     if (!sessaoUsuario || !sessaoUsuario.projectId || sessaoUsuario.projectId.includes("exemplo")) return;
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
     try {
@@ -1264,6 +1475,7 @@ async function revalidarSessaoNaNuvem() {
 
   window.fazerLogout = function () {
     if (confirm("Deseja realmente sair? Será necessário autenticar novamente com o PIN da sua Subseção.")) {
+      pararAutoRefreshDia();
       localStorage.removeItem("maestro_mobile_session");
       localStorage.removeItem("maestro_mobile_key_saved");
       try { sessionStorage.removeItem("maestro_mobile_key"); } catch (e) {}
@@ -1387,6 +1599,7 @@ async function revalidarSessaoNaNuvem() {
     localStorage.setItem("maestro_mobile_session", JSON.stringify(sessaoUsuario));
 
     todasPericiasPje = [];
+
     pautasParaImportar = [];
     const areaPrev = document.getElementById("areaPreviewImportWpp");
     if (areaPrev) areaPrev.style.display = "none";
@@ -1448,6 +1661,8 @@ async function revalidarSessaoNaNuvem() {
 
   function popularFiltroVaras(varas) {
     preencherSelectFiltroVaras("filtroVara", varas);
+    preencherSelectFiltroVaras("filtroVaraDashboard", varas);
+    preencherSelectFiltroVaras("relFiltroVara", varas);
   }
 
   function popularFiltroVarasPorDia(varas) {
@@ -1880,14 +2095,16 @@ async function revalidarSessaoNaNuvem() {
 
       todasPautas = aplicarFiltroRestritoSubsecao(pautasCarregadas, subId);
       todasPericiasPje = aplicarFiltroRestritoPericiasPje(periciasPjeCarregadas, subId);
+      ultimaSyncEscalaTs = Date.now();
       if (!erroDecifragemChave) {
         salvarCacheLocal(subId, todasPautas);
         salvarPericiasPjeCache(subId, todasPericiasPje);
       }
+      atualizarIndicadorSync();
       atualizarInterfaceCompleta();
     } catch (err) {
       console.error("Erro na sincronização:", err);
-      alert("Erro ao sincronizar pautas: " + err.message);
+      mostrarToast("Erro ao sincronizar pautas: " + err.message, "error", 4200);
     } finally {
       mostrarFeedbackCarregamento(false);
     }
@@ -2183,6 +2400,7 @@ async function revalidarSessaoNaNuvem() {
   }
 
   function interpretarTextoWhatsApp() {
+
     if (!podeEnviarPautasNaSessao()) {
       alert("👁️ Seu perfil é Somente Leitura e não possui permissão para importar pautas.");
       return;
@@ -2961,9 +3179,11 @@ async function revalidarSessaoNaNuvem() {
   // =========================================================================
   function atualizarInterfaceCompleta() {
     atualizarLabelPeriodo();
+    sincronizarMesRelatorioPadrao();
     atualizarKpisDoMes();
     window.filtrarPautas();
     renderizarAbaPorDia();
+    atualizarResumoFiltroRelatorio();
   }
 
   function atualizarLabelPeriodo() {
@@ -2971,7 +3191,17 @@ async function revalidarSessaoNaNuvem() {
     document.getElementById("lblAnoAtual").textContent = anoAtivo;
   }
 
+  function sincronizarMesRelatorioPadrao() {
+    const inp = document.getElementById("relFiltroMesInput");
+    if (!inp) return;
+    const mesIso = `${anoAtivo}-${String(mesAtivo + 1).padStart(2, "0")}`;
+    if (!inp.value || inp.dataset.manual !== "true") {
+      inp.value = mesIso;
+    }
+  }
+
   window.alterarMes = function (delta) {
+
     mesAtivo += delta;
     if (mesAtivo > 11) {
       mesAtivo = 0;
@@ -2980,16 +3210,26 @@ async function revalidarSessaoNaNuvem() {
       mesAtivo = 11;
       anoAtivo--;
     }
+    const inp = document.getElementById("relFiltroMesInput");
+    if (inp) inp.dataset.manual = "false";
     atualizarInterfaceCompleta();
   };
 
-  function obterPautasDoMesAtivo() {
+  function obterPautasDoMesAtivo(varaFiltro = "") {
     const mesIso = `${anoAtivo}-${String(mesAtivo + 1).padStart(2, "0")}`;
-    return todasPautas.filter((p) => p.data && p.data.startsWith(mesIso));
+    const vNorm = varaFiltro ? normalizarNumeroVara(varaFiltro) : "";
+    return todasPautas.filter((p) => {
+      if (!p.data || !p.data.startsWith(mesIso)) return false;
+      if (vNorm && normalizarNumeroVara(p.vara) !== vNorm) return false;
+      return true;
+    });
   }
 
   function atualizarKpisDoMes() {
-    const pautasMes = obterPautasDoMesAtivo();
+    const selVaraDash = document.getElementById("filtroVaraDashboard");
+    const varaAtivaDash = selVaraDash ? selVaraDash.value : filtroVaraDashboard;
+    filtroVaraDashboard = varaAtivaDash || "";
+    const pautasMes = obterPautasDoMesAtivo(varaAtivaDash);
 
     let totalVagas = 0;
     let marcadas = 0;
@@ -3010,17 +3250,19 @@ async function revalidarSessaoNaNuvem() {
       else if (p.categoria === "outras") catOutras += vagas;
       else catMedica += vagas;
 
-      const v = p.vara ? `${p.vara}ª Vara` : "Vara Única";
-      if (!varasMap[v]) varasMap[v] = { marcadas: 0, pendentes: 0, total: 0 };
-      varasMap[v].total += vagas;
-      if (p.situacao === "Marcado") varasMap[v].marcadas += vagas;
-      else if (ehSituacaoPendente(p.situacao)) varasMap[v].pendentes += vagas;
+      const vNum = normalizarNumeroVara(p.vara);
+      const vLabel = vNum ? `${vNum}ª Vara` : "Vara Única";
+      if (!varasMap[vLabel]) varasMap[vLabel] = { varaNum: vNum, marcadas: 0, pendentes: 0, total: 0 };
+      varasMap[vLabel].total += vagas;
+      if (p.situacao === "Marcado") varasMap[vLabel].marcadas += vagas;
+      else if (ehSituacaoPendente(p.situacao)) varasMap[vLabel].pendentes += vagas;
     });
 
     const taxa = totalVagas > 0 ? Math.round((marcadas / totalVagas) * 100) : 0;
 
     document.getElementById("kpiTotalVagas").textContent = totalVagas;
-    document.getElementById("kpiTotalPautas").textContent = `${pautasMes.length} pautas em ${MESES_NOMES[mesAtivo]}`;
+    const varaLabelHint = varaAtivaDash ? ` (${normalizarNumeroVara(varaAtivaDash)}ª VF)` : "";
+    document.getElementById("kpiTotalPautas").textContent = `${pautasMes.length} pautas em ${MESES_NOMES[mesAtivo]}${varaLabelHint}`;
     document.getElementById("kpiMarcadas").textContent = marcadas;
     document.getElementById("kpiPendentes").textContent = pendentes;
     document.getElementById("kpiTaxaOcupacao").textContent = `${taxa}%`;
@@ -3034,6 +3276,27 @@ async function revalidarSessaoNaNuvem() {
     document.getElementById("countCatSocial").textContent = `${catSocial} vagas`;
     document.getElementById("countCatOutras").textContent = `${catOutras} vagas`;
 
+    // Alertas de prazo crítico (<= 5 dias úteis ou vencido) nas pautas pendentes da Vara selecionada
+    const cardAlerta = document.getElementById("cardAlertasPrazoDashboard");
+    const lblAlerta = document.getElementById("lblResumoAlertasPrazo");
+    if (cardAlerta && lblAlerta) {
+      const vNorm = varaAtivaDash ? normalizarNumeroVara(varaAtivaDash) : "";
+      const criticas = (todasPautas || []).filter((p) => {
+        if (vNorm && normalizarNumeroVara(p.vara) !== vNorm) return false;
+        const info = resolverPrazoInfoPauta(p);
+        return Boolean(info && info.prazoDias <= 5);
+      });
+      if (criticas.length > 0) {
+        const vencidas = criticas.filter((p) => resolverPrazoInfoPauta(p).prazoDias < 0).length;
+        lblAlerta.textContent = vencidas > 0
+          ? `${criticas.length} pauta(s) pendente(s) com prazo crítico (${vencidas} já vencida(s))`
+          : `${criticas.length} pauta(s) pendente(s) com prazo limite ≤ 5 dias`;
+        cardAlerta.style.display = "flex";
+      } else {
+        cardAlerta.style.display = "none";
+      }
+    }
+
     renderizarVarasKpi(varasMap);
   }
 
@@ -3042,19 +3305,21 @@ async function revalidarSessaoNaNuvem() {
     container.innerHTML = "";
 
     const keys = Object.keys(varasMap);
-    document.getElementById("lblQtdVaras").textContent = `${keys.length} Varas Ativas`;
+    document.getElementById("lblQtdVaras").textContent = `${keys.length} Vara(s) Ativa(s)`;
 
     if (keys.length === 0) {
-      container.innerHTML = '<div class="text-sm text-muted" style="padding: 10px; text-align: center;">Nenhuma perícia agendada para este mês nesta subseção.</div>';
+      container.innerHTML = '<div class="text-sm text-muted" style="padding: 10px; text-align: center;">Nenhuma perícia agendada para este mês neste filtro.</div>';
       return;
     }
 
     keys.sort().forEach((vara) => {
       const info = varasMap[vara];
       const div = document.createElement("div");
-      div.className = "vara-row";
+      div.className = "vara-row is-clickable";
+      div.setAttribute("data-vara-drill", info.varaNum || "");
+      div.title = "Toque para filtrar esta Vara na Lista";
       div.innerHTML = `
-        <span class="vara-title">${escapeHtml(vara)}</span>
+        <span class="vara-title">${escapeHtml(vara)} ➔</span>
         <div class="vara-counts">
           <span class="badge-count badge-count-green" title="Marcadas">${escapeHtml(info.marcadas)} marcadas</span>
           <span class="badge-count badge-count-yellow" title="Pendentes">${escapeHtml(info.pendentes)} pendentes</span>
@@ -3063,6 +3328,60 @@ async function revalidarSessaoNaNuvem() {
       `;
       container.appendChild(div);
     });
+  }
+
+  function abrirListaComFiltros(opts = {}) {
+    if (opts.texto !== undefined) {
+      const inp = document.getElementById("filtroTexto");
+      if (inp) inp.value = String(opts.texto || "");
+    }
+    if (opts.vara !== undefined) {
+      const selVara = document.getElementById("filtroVara");
+      if (selVara && !selVara.disabled) selVara.value = opts.vara ? normalizarNumeroVara(opts.vara) : "";
+    }
+    if (opts.periodo !== undefined) {
+      const selPer = document.getElementById("filtroPeriodoPautas");
+      if (selPer) selPer.value = opts.periodo || "todos";
+    }
+    if (opts.local !== undefined) {
+      const selLoc = document.getElementById("filtroLocalPautas");
+      if (selLoc) selLoc.value = opts.local || "";
+    }
+    if (opts.categoria !== undefined) {
+      const selCat = document.getElementById("filtroCategoria");
+      if (selCat) selCat.value = opts.categoria || "";
+    }
+    if (opts.ordenacao !== undefined) {
+      const selOrd = document.getElementById("filtroOrdenacaoPautas");
+      if (selOrd) selOrd.value = opts.ordenacao || "data_asc";
+    }
+
+    const sit = opts.situacao || "todos";
+    const pillEl = document.querySelector(`#tabPautas .filter-pills .pill[data-filtro='${sit}']`)
+      || document.querySelector("#tabPautas .filter-pills .pill[data-filtro='todos']");
+    window.setFiltroSituacao(sit, pillEl);
+    window.trocarAba("tabPautas");
+  }
+
+  function renderizarAcoesCardPautaHtml(p) {
+    if (!p || !podeEnviarPautasNaSessao()) return "";
+    if (!isVaraAutorizadaNaSessao(p.vara, sessaoUsuario, sessaoUsuario?.subsecaoId)) return "";
+
+    const clsSit = classificarSituacaoFiltro(p.situacao);
+    let labelCiclo = "🟡 ➔ Em marcação";
+    if (clsSit === "em_marcacao") labelCiclo = "🟢 ➔ Marcar";
+    else if (clsSit === "marcado") labelCiclo = "⚪ ➔ Não marcado";
+
+    const idAttr = escapeHtml(p.id || "");
+    const keyAttr = escapeHtml(gerarChaveUnicaPauta(p));
+
+    return `
+      <div class="pauta-card-actions">
+        <button type="button" class="btn-card-action" data-pauta-action="ciclar-situacao" data-pauta-id="${idAttr}" data-pauta-key="${keyAttr}">${labelCiclo}</button>
+        <button type="button" class="btn-card-action" data-pauta-action="editar" data-pauta-id="${idAttr}" data-pauta-key="${keyAttr}">✏️ Editar</button>
+        <button type="button" class="btn-card-action btn-card-danger" data-pauta-action="excluir" data-pauta-id="${idAttr}" data-pauta-key="${keyAttr}" title="Excluir pauta">🗑️</button>
+      </div>
+    `;
   }
 
   // =========================================================================
@@ -3131,26 +3450,56 @@ async function revalidarSessaoNaNuvem() {
     const box = document.getElementById("boxCalendarioPorDia");
     const btn = document.getElementById("btnToggleCalendarioDia");
     if (box) box.style.display = calendarioDiaVisivel ? "block" : "none";
-    if (btn) btn.textContent = calendarioDiaVisivel ? "🗓️ Ocultar Cal." : "🗓️ Calendário";
+    if (btn) btn.textContent = calendarioDiaVisivel ? "🗓️ Ocultar" : "🗓️ Cal.";
+  }
+
+  function pararAutoRefreshDia() {
+    if (autoRefreshDiaTimer) {
+      clearInterval(autoRefreshDiaTimer);
+      autoRefreshDiaTimer = null;
+    }
+    autoRefreshDiaAtivo = false;
+    const btn = document.getElementById("btnAutoRefreshDia");
+    if (btn) btn.textContent = "🔄 Auto: OFF";
+  }
+
+  function alternarAutoRefreshDia() {
+    if (autoRefreshDiaAtivo) {
+      pararAutoRefreshDia();
+      mostrarToast("Atualização automática desativada.", "info", 1800);
+      return;
+    }
+    autoRefreshDiaAtivo = true;
+    const btn = document.getElementById("btnAutoRefreshDia");
+    if (btn) btn.textContent = "🟢 Auto: 60s";
+    autoRefreshDiaTimer = setInterval(() => {
+      if (!sessaoUsuario || document.hidden) return;
+      const tabDiaAtiva = document.getElementById("tabPorDia")?.classList.contains("active");
+      if (!tabDiaAtiva) return;
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+      window.sincronizarPautas(obterChaveNuvemSessao());
+    }, 60000);
+    mostrarToast("Auto-atualização ativada (a cada 60s na aba Por Dia).", "success", 2400);
   }
 
   function irParaProximoDiaComAtividade() {
     const varaFiltro = document.getElementById("filtroVaraPorDia")?.value || "";
+    const vNorm = varaFiltro ? normalizarNumeroVara(varaFiltro) : "";
     const datasSet = new Set();
     (todasPautas || []).forEach((p) => {
       if (!p.data) return;
-      if (varaFiltro && normalizarNumeroVara(p.vara) !== normalizarNumeroVara(varaFiltro)) return;
+      if (vNorm && normalizarNumeroVara(p.vara) !== vNorm) return;
       datasSet.add(p.data);
     });
     (todasPericiasPje || []).forEach((p) => {
       if (!p.dataPericiaIso) return;
-      if (varaFiltro && (p.varaNum || extrairVaraNumeroPericiaMobile(p.vara)) !== normalizarNumeroVara(varaFiltro)) return;
+      if (vNorm && (p.varaNum || extrairVaraNumeroPericiaMobile(p.vara)) !== vNorm) return;
       datasSet.add(p.dataPericiaIso);
     });
 
     const ordenadas = Array.from(datasSet).sort();
     if (ordenadas.length === 0) {
-      alert("Nenhuma pauta ou perícia encontrada para a subseção/vara selecionada.");
+      mostrarToast("Nenhuma pauta ou perícia encontrada para a subseção/vara selecionada.", "warn");
       return;
     }
     const proxima = ordenadas.find((d) => d > dataSelecionadaPorDia) || ordenadas.find((d) => d >= dataSelecionadaPorDia) || ordenadas[0];
@@ -3235,6 +3584,98 @@ async function revalidarSessaoNaNuvem() {
     return { label: "⏳ Aguardando", cls: "st-aguardando" };
   }
 
+  function obterItensFiltradosPorDia() {
+    const txtBusca = removerAcentosLowerMobile(document.getElementById("filtroTextoPorDia")?.value || "");
+    const varaFiltro = document.getElementById("filtroVaraPorDia")?.value || "";
+    const vNormFiltro = varaFiltro ? normalizarNumeroVara(varaFiltro) : "";
+    const sitFiltro = document.getElementById("filtroSituacaoPorDia")?.value || "todos";
+    const statusPjeFiltro = document.getElementById("filtroStatusPjePorDia")?.value || "todos";
+
+    const escalaDoDia = (todasPautas || []).filter((p) => {
+      if (p.data !== dataSelecionadaPorDia) return false;
+      if (vNormFiltro && normalizarNumeroVara(p.vara) !== vNormFiltro) return false;
+      if (!correspondeFiltroSituacao(p, sitFiltro)) return false;
+      if (txtBusca) {
+        const hay = removerAcentosLowerMobile(`${p.peritoNome} ${p.especialidade} ${p.vara} ${p.local} ${p.endereco || ""} ${p.observacoes || ""}`);
+        if (!hay.includes(txtBusca)) return false;
+      }
+      return true;
+    }).sort((a, b) => (a.horaInicio || "08:00").localeCompare(b.horaInicio || "08:00"));
+
+    const pautaDoDia = (todasPericiasPje || []).filter((p) => {
+      if (p.dataPericiaIso !== dataSelecionadaPorDia) return false;
+      if (vNormFiltro && (p.varaNum || extrairVaraNumeroPericiaMobile(p.vara)) !== vNormFiltro) return false;
+      if (statusPjeFiltro !== "todos") {
+        const st = String(p.statusAtendimento || "AGUARDANDO_CHEGADA").toUpperCase();
+        if (statusPjeFiltro === "PRESENTE") {
+          if (st !== "PRESENTE" && !(p.presencaConfirmada && st === "AGUARDANDO_CHEGADA")) return false;
+        } else if (st !== statusPjeFiltro) {
+          return false;
+        }
+      }
+      if (txtBusca) {
+        const hay = removerAcentosLowerMobile(`${p.perito} ${p.periciado} ${p.processo} ${p.especialidade} ${p.vara} ${p.sala || ""}`);
+        if (!hay.includes(txtBusca)) return false;
+      }
+      return true;
+    }).sort((a, b) => {
+      const cmpHora = (a.horaPericia || "99:99").localeCompare(b.horaPericia || "99:99");
+      if (cmpHora !== 0) return cmpHora;
+      return (a.perito || "").localeCompare(b.perito || "", "pt-BR");
+    });
+
+    return { escalaDoDia, pautaDoDia, txtBusca, varaFiltro };
+  }
+
+  function compartilharResumoDiaWhatsApp() {
+    if (!sessaoUsuario) return;
+    const cab = formatarCabecalhoDia(dataSelecionadaPorDia);
+    const { escalaDoDia, pautaDoDia, varaFiltro } = obterItensFiltradosPorDia();
+    if (escalaDoDia.length === 0 && pautaDoDia.length === 0) {
+      mostrarToast("Nenhuma escala ou perícia para compartilhar neste dia.", "warn");
+      return;
+    }
+
+    const subInfo = SUBSECOES_MAP[sessaoUsuario.subsecaoId] || { nome: sessaoUsuario.subsecaoNome };
+    const varaLabel = varaFiltro ? ` (${normalizarNumeroVara(varaFiltro)}ª VF)` : "";
+
+    let txt = `⚖️ *MAESTRO PJE - PAUTA DO DIA*\n`;
+    txt += `📅 *Data:* ${cab.dataBr} (${cab.diaSemana.replace(/^(Hoje|Amanhã)\s*•\s*/, "")})\n`;
+    txt += `📍 *Subseção:* ${subInfo.nome}${varaLabel}\n\n`;
+
+    if (escalaDoDia.length > 0) {
+      txt += `🗓️ *ESCALA DE PERITOS (${escalaDoDia.length} bloco(s)):*\n`;
+      escalaDoDia.forEach((p) => {
+        const vagas = p.vagas !== undefined ? p.vagas : p.quantidade;
+        const hora = p.horaInicio || p.hora || "08:00";
+        const loc = p.endereco ? `${p.local} (${p.endereco})` : (p.local || "JF");
+        txt += `• *${hora}* — ${p.peritoNome} | ${p.vara}ª VF | ${vagas} vagas | _${p.situacao}_ | ${loc}\n`;
+      });
+      txt += "\n";
+    }
+
+    if (pautaDoDia.length > 0) {
+      const porPerito = {};
+      pautaDoDia.forEach((p) => {
+        const k = p.perito || "Perito";
+        porPerito[k] = (porPerito[k] || 0) + 1;
+      });
+      txt += `📋 *PAUTA PJE (${pautaDoDia.length} perícia(s)):*\n`;
+      Object.keys(porPerito).sort().forEach((per) => {
+        txt += `• ${per}: ${porPerito[per]} periciando(s)\n`;
+      });
+    }
+
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(txt).then(() => {
+        mostrarToast("Resumo do dia copiado! Abrindo opções de envio...", "success", 2400);
+      }).catch(() => {});
+    }
+    if (confirm("Resumo do dia copiado para a área de transferência.\n\nDeseja abrir no WhatsApp agora?")) {
+      window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(txt)}`, "_blank");
+    }
+  }
+
   function renderizarAbaPorDia() {
     if (!sessaoUsuario) return;
 
@@ -3248,36 +3689,33 @@ async function revalidarSessaoNaNuvem() {
 
     renderizarCalendarioPorDia();
 
-    const txtBusca = removerAcentosLowerMobile(document.getElementById("filtroTextoPorDia")?.value || "");
+    const { escalaDoDia, pautaDoDia, txtBusca } = obterItensFiltradosPorDia();
     const btnLimpar = document.getElementById("btnLimparBuscaPorDia");
     if (btnLimpar) btnLimpar.style.display = txtBusca ? "block" : "none";
 
-    const varaFiltro = document.getElementById("filtroVaraPorDia")?.value || "";
-    const vNormFiltro = varaFiltro ? normalizarNumeroVara(varaFiltro) : "";
-
-    const escalaDoDia = (todasPautas || []).filter((p) => {
-      if (p.data !== dataSelecionadaPorDia) return false;
-      if (vNormFiltro && normalizarNumeroVara(p.vara) !== vNormFiltro) return false;
-      if (txtBusca) {
-        const hay = removerAcentosLowerMobile(`${p.peritoNome} ${p.especialidade} ${p.vara} ${p.local} ${p.endereco || ""} ${p.observacoes || ""}`);
-        if (!hay.includes(txtBusca)) return false;
+    // Faixa de ocupação de salas físicas no prédio (Manhã e Tarde)
+    const salasStrip = document.getElementById("diaSalasStrip");
+    if (salasStrip) {
+      if (Parser && typeof Parser.obterOcupacaoSalasTurno === "function") {
+        const ocupManha = Parser.obterOcupacaoSalasTurno(dataSelecionadaPorDia, "manha", todasPautas);
+        const ocupTarde = Parser.obterOcupacaoSalasTurno(dataSelecionadaPorDia, "tarde", todasPautas);
+        const mOver = ocupManha.totalSalas > 4;
+        const tOver = ocupTarde.totalSalas > 4;
+        salasStrip.style.display = "flex";
+        salasStrip.innerHTML = `
+          <div class="dia-sala-pill ${mOver ? "is-over" : ""}" title="${escapeHtml(ocupManha.peritos.join(", "))}">
+            <span>☀️ Salas Manhã</span>
+            <strong>${ocupManha.totalSalas}/4 ${mOver ? "🚨" : ""}</strong>
+          </div>
+          <div class="dia-sala-pill ${tOver ? "is-over" : ""}" title="${escapeHtml(ocupTarde.peritos.join(", "))}">
+            <span>🌙 Salas Tarde</span>
+            <strong>${ocupTarde.totalSalas}/4 ${tOver ? "🚨" : ""}</strong>
+          </div>
+        `;
+      } else {
+        salasStrip.style.display = "none";
       }
-      return true;
-    }).sort((a, b) => (a.horaInicio || "08:00").localeCompare(b.horaInicio || "08:00"));
-
-    const pautaDoDia = (todasPericiasPje || []).filter((p) => {
-      if (p.dataPericiaIso !== dataSelecionadaPorDia) return false;
-      if (vNormFiltro && (p.varaNum || extrairVaraNumeroPericiaMobile(p.vara)) !== vNormFiltro) return false;
-      if (txtBusca) {
-        const hay = removerAcentosLowerMobile(`${p.perito} ${p.periciado} ${p.processo} ${p.especialidade} ${p.vara} ${p.sala || ""}`);
-        if (!hay.includes(txtBusca)) return false;
-      }
-      return true;
-    }).sort((a, b) => {
-      const cmpHora = (a.horaPericia || "99:99").localeCompare(b.horaPericia || "99:99");
-      if (cmpHora !== 0) return cmpHora;
-      return (a.perito || "").localeCompare(b.perito || "", "pt-BR");
-    });
+    }
 
     // KPIs e contadores do dia
     const totalVagasEscala = escalaDoDia.reduce((acc, p) => acc + (Number(p.vagas !== undefined ? p.vagas : p.quantidade) || 0), 0);
@@ -3313,10 +3751,10 @@ async function revalidarSessaoNaNuvem() {
     if (secEscala) secEscala.style.display = (modoVisualizacaoDia === "pauta") ? "none" : "block";
     if (secPauta) secPauta.style.display = (modoVisualizacaoDia === "escala") ? "none" : "block";
 
-    // Mapa cruzado PJe por perito neste dia
+    // Mapa cruzado PJe por perito neste dia (reconciliado via nome oficial quando disponível)
     const contagemPjePorPerito = {};
     pautaDoDia.forEach((p) => {
-      const k = removerAcentosLowerMobile(p.perito);
+      const k = normalizarChavePeritoReconcil(p.perito);
       if (k) contagemPjePorPerito[k] = (contagemPjePorPerito[k] || 0) + 1;
     });
 
@@ -3326,26 +3764,28 @@ async function revalidarSessaoNaNuvem() {
       if (escalaDoDia.length === 0) {
         containerEscala.innerHTML = `
           <div class="section-card" style="text-align: center; padding: 18px;">
-            <p class="text-sm text-muted" style="margin-bottom: 10px;">Nenhuma escala de perito cadastrada para ${escapeHtml(cab.dataBr)}.</p>
+            <p class="text-sm text-muted" style="margin-bottom: 10px;">Nenhuma escala de perito para ${escapeHtml(cab.dataBr)} com os filtros atuais.</p>
             <button type="button" class="btn btn-outline btn-sm" data-action="proximo-dia-atividade">⏭️ Ir para próximo dia com pauta</button>
           </div>
         `;
       } else {
         containerEscala.innerHTML = escalaDoDia.map((p) => {
-          const isMarcado = p.situacao === "Marcado";
-          const statusClass = isMarcado ? "status-marcado" : "status-pendente";
-          const badgeClass = isMarcado ? "status-badge-marcado" : "status-badge-pendente";
+          const clsSit = classificarSituacaoFiltro(p.situacao);
+          const statusClass = clsSit === "marcado" ? "status-marcado" : (clsSit === "em_marcacao" ? "status-em-marcacao" : "status-pendente");
+          const badgeClass = clsSit === "marcado" ? "status-badge-marcado" : (clsSit === "em_marcacao" ? "status-badge-em-marcacao" : "status-badge-pendente");
           const vagasNum = p.vagas !== undefined ? p.vagas : p.quantidade;
           const horaTxt = p.horaInicio || p.hora || "08:00";
           const hInt = parseInt(horaTxt.split(":")[0], 10);
           const turnoBadge = !isNaN(hInt)
             ? `<span class="dia-turno-badge">${hInt < 12 ? "☀️ Manhã" : "🌙 Tarde"}</span>`
             : "";
-          const qtdPje = contagemPjePorPerito[removerAcentosLowerMobile(p.peritoNome)] || 0;
+          const qtdPje = contagemPjePorPerito[normalizarChavePeritoReconcil(p.peritoNome)] || 0;
           const reconcilBadge = qtdPje > 0
-            ? `<span class="dia-escala-reconcil-badge">📋 ${qtdPje} no PJe</span>`
+            ? `<span class="dia-escala-reconcil-badge">📋 ${qtdPje}/${vagasNum} no PJe</span>`
             : "";
           const obsTxt = p.observacoes || p.observacao || "";
+          const prazoBadgeHtml = obterBadgePrazoPautaHtml(p);
+          const actionsHtml = renderizarAcoesCardPautaHtml(p);
 
           return `
             <div class="pauta-card ${statusClass}">
@@ -3359,12 +3799,14 @@ async function revalidarSessaoNaNuvem() {
               <div class="pauta-perito">${escapeHtml(p.peritoNome)} ${reconcilBadge}</div>
               <div class="pauta-esp">${escapeHtml(p.especialidade || "-")}</div>
               <div class="pauta-details-grid">
-                <div class="detail-item"><span>Vara:</span><strong>${escapeHtml(p.vara)}ª Federal</strong></div>
+                <div class="detail-item"><span>Vara:</span><strong>${escapeHtml(normalizarNumeroVara(p.vara) || p.vara)}ª Federal</strong></div>
                 <div class="detail-item"><span>Vagas:</span><strong>${escapeHtml(vagasNum)} perícias</strong></div>
                 <div class="detail-item"><span>Local:</span><strong>${escapeHtml(p.local || "JF")}</strong></div>
               </div>
               ${p.endereco ? `<div class="pauta-obs" style="margin-bottom:4px;">📍 ${escapeHtml(p.endereco)}</div>` : ""}
               ${obsTxt ? `<div class="pauta-obs">💡 ${escapeHtml(obsTxt)}</div>` : ""}
+              ${prazoBadgeHtml}
+              ${actionsHtml}
             </div>
           `;
         }).join("");
@@ -3377,7 +3819,7 @@ async function revalidarSessaoNaNuvem() {
       if (pautaDoDia.length === 0) {
         const msgExtra = todasPericiasPje.length === 0
           ? "Sincronize a pauta na aba \"Chamada de Perícias\" ou \"Pautas Marcadas\" no Maestro Desktop com a nuvem ativa para visualizar os periciandos no celular."
-          : `Nenhuma perícia do PJe registrada para ${escapeHtml(cab.dataBr)}.`;
+          : `Nenhuma perícia do PJe para ${escapeHtml(cab.dataBr)} com os filtros atuais.`;
         containerPauta.innerHTML = `
           <div class="section-card" style="text-align: center; padding: 18px;">
             <p class="text-sm text-muted" style="margin-bottom: 10px;">${msgExtra}</p>
@@ -3442,73 +3884,148 @@ async function revalidarSessaoNaNuvem() {
   }
 
   // =========================================================================
-  // 9. LISTAGEM & FILTROS DAS PAUTAS
+  // 9. LISTAGEM & FILTROS COMPLETOS DAS PAUTAS (VARA, SITUAÇÃO, PERÍODO)
   // =========================================================================
   window.setFiltroSituacao = function (filtro, elem) {
-    filtroSituacaoAtivo = filtro;
+    filtroSituacaoAtivo = filtro || "todos";
     document.querySelectorAll("#tabPautas .filter-pills .pill").forEach((p) => p.classList.remove("active"));
-    if (elem) elem.classList.add("active");
+    const targetPill = elem || document.querySelector(`#tabPautas .filter-pills .pill[data-filtro='${filtroSituacaoAtivo}']`);
+    if (targetPill) targetPill.classList.add("active");
     window.filtrarPautas();
   };
 
   window.limparBusca = function () {
     const input = document.getElementById("filtroTexto");
-    input.value = "";
-    document.getElementById("btnLimparBusca").style.display = "none";
+    if (input) input.value = "";
+    const btn = document.getElementById("btnLimparBusca");
+    if (btn) btn.style.display = "none";
     window.filtrarPautas();
   };
 
+  function resetarFiltrosListaPautas() {
+    const inp = document.getElementById("filtroTexto");
+    const selVara = document.getElementById("filtroVara");
+    const selPer = document.getElementById("filtroPeriodoPautas");
+    const selLoc = document.getElementById("filtroLocalPautas");
+    const selCat = document.getElementById("filtroCategoria");
+    const selOrd = document.getElementById("filtroOrdenacaoPautas");
+    if (inp) inp.value = "";
+    if (selVara && !selVara.disabled) selVara.value = "";
+    if (selPer) selPer.value = "todos";
+    if (selLoc) selLoc.value = "";
+    if (selCat) selCat.value = "";
+    if (selOrd) selOrd.value = "data_asc";
+    window.setFiltroSituacao("todos");
+  }
+
   window.filtrarPautas = function () {
-    const txtBusca = (document.getElementById("filtroTexto").value || "").toLowerCase().trim();
-    const varaFiltro = document.getElementById("filtroVara").value;
-    const catFiltro = document.getElementById("filtroCategoria").value;
+    const txtBusca = removerAcentosLowerMobile(document.getElementById("filtroTexto")?.value || "");
+    const varaFiltro = document.getElementById("filtroVara")?.value || "";
+    const vNormFiltro = varaFiltro ? normalizarNumeroVara(varaFiltro) : "";
+    const periodoFiltro = document.getElementById("filtroPeriodoPautas")?.value || "todos";
+    const localFiltro = document.getElementById("filtroLocalPautas")?.value || "";
+    const catFiltro = document.getElementById("filtroCategoria")?.value || "";
+    const ordenacaoFiltro = document.getElementById("filtroOrdenacaoPautas")?.value || "data_asc";
     const btnLimpar = document.getElementById("btnLimparBusca");
+    const btnReset = document.getElementById("btnResetFiltrosPautas");
 
     if (btnLimpar) btnLimpar.style.display = txtBusca ? "block" : "none";
 
-    let countTotal = 0;
-    let countMarc = 0;
-    let countPend = 0;
+    const temFiltroAtivo = Boolean(
+      txtBusca ||
+      (varaFiltro && !document.getElementById("filtroVara")?.disabled) ||
+      periodoFiltro !== "todos" ||
+      localFiltro ||
+      catFiltro ||
+      filtroSituacaoAtivo !== "todos" ||
+      ordenacaoFiltro !== "data_asc"
+    );
+    if (btnReset) btnReset.style.display = temFiltroAtivo ? "inline-flex" : "none";
 
-    todasPautas.forEach((p) => {
-      countTotal++;
-      if (p.situacao === "Marcado") countMarc++;
-      else if (ehSituacaoPendente(p.situacao)) countPend++;
-    });
+    const hojeIso = obterHojeIsoLocal();
+    const mesIsoAtivo = `${anoAtivo}-${String(mesAtivo + 1).padStart(2, "0")}`;
 
-    document.getElementById("pillCountTodos").textContent = countTotal;
-    document.getElementById("pillCountMarcadas").textContent = countMarc;
-    document.getElementById("pillCountPendentes").textContent = countPend;
-
-    pautasFiltradas = todasPautas.filter((p) => {
-      if (filtroSituacaoAtivo === "marcado" && p.situacao !== "Marcado") return false;
-      if (filtroSituacaoAtivo === "pendente" && !ehSituacaoPendente(p.situacao)) return false;
-      if (varaFiltro && String(p.vara) !== String(varaFiltro)) return false;
+    // Base filtrada por Vara/Período/Local/Categoria/Busca (antes da pílula de Situação)
+    const baseSemSituacao = (todasPautas || []).filter((p) => {
+      if (vNormFiltro && normalizarNumeroVara(p.vara) !== vNormFiltro) return false;
+      if (periodoFiltro === "proximas" && (!p.data || p.data < hojeIso)) return false;
+      if (periodoFiltro === "mes_atual" && (!p.data || !p.data.startsWith(mesIsoAtivo))) return false;
+      if (periodoFiltro === "prazo_critico") {
+        const prazoInfo = resolverPrazoInfoPauta(p);
+        if (!prazoInfo || prazoInfo.prazoDias > 5) return false;
+      }
+      if (localFiltro === "predio" && Parser && Parser.ehLocalFora(p.local)) return false;
+      if (localFiltro === "fora" && (!Parser || !Parser.ehLocalFora(p.local))) return false;
       if (catFiltro && p.categoria !== catFiltro) return false;
       if (txtBusca) {
-        const conteudo = `${p.peritoNome} ${p.especialidade} ${p.vara} ${p.data} ${p.local} ${p.endereco || ""} ${p.observacoes || ""}`.toLowerCase();
+        const conteudo = removerAcentosLowerMobile(`${p.peritoNome} ${p.especialidade} ${p.vara} ${p.data} ${p.local} ${p.endereco || ""} ${p.observacoes || ""}`);
         if (!conteudo.includes(txtBusca)) return false;
       }
       return true;
     });
 
-    pautasFiltradas.sort((a, b) => (a.data || "").localeCompare(b.data || ""));
+    let countTotal = 0;
+    let countMarc = 0;
+    let countNaoMarc = 0;
+    let countEmMarc = 0;
+    let countPend = 0;
+
+    baseSemSituacao.forEach((p) => {
+      countTotal++;
+      const cls = classificarSituacaoFiltro(p.situacao);
+      if (cls === "marcado") countMarc++;
+      else if (cls === "nao_marcado") { countNaoMarc++; countPend++; }
+      else if (cls === "em_marcacao") { countEmMarc++; countPend++; }
+    });
+
+    const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = String(val); };
+    setTxt("pillCountTodos", countTotal);
+    setTxt("pillCountMarcadas", countMarc);
+    setTxt("pillCountNaoMarcadas", countNaoMarc);
+    setTxt("pillCountEmMarcacao", countEmMarc);
+    setTxt("pillCountPendentes", countPend);
+
+    pautasFiltradas = baseSemSituacao.filter((p) => correspondeFiltroSituacao(p, filtroSituacaoAtivo));
+
+    pautasFiltradas.sort((a, b) => {
+      if (ordenacaoFiltro === "data_desc") {
+        return (b.data || "").localeCompare(a.data || "") || (a.horaInicio || "").localeCompare(b.horaInicio || "");
+      }
+      if (ordenacaoFiltro === "perito_asc") {
+        return (a.peritoNome || "").localeCompare(b.peritoNome || "", "pt-BR") || (a.data || "").localeCompare(b.data || "");
+      }
+      if (ordenacaoFiltro === "vagas_desc") {
+        const va = Number(a.vagas !== undefined ? a.vagas : a.quantidade) || 0;
+        const vb = Number(b.vagas !== undefined ? b.vagas : b.quantidade) || 0;
+        return vb - va || (a.data || "").localeCompare(b.data || "");
+      }
+      if (ordenacaoFiltro === "prazo_asc") {
+        const pa = resolverPrazoInfoPauta(a)?.prazoDias ?? 9999;
+        const pb = resolverPrazoInfoPauta(b)?.prazoDias ?? 9999;
+
+        return pa - pb || (a.data || "").localeCompare(b.data || "");
+      }
+      return (a.data || "").localeCompare(b.data || "") || (a.horaInicio || "").localeCompare(b.horaInicio || "");
+    });
+
     renderizarCardsPautas();
   };
 
   function renderizarCardsPautas() {
     const container = document.getElementById("listaPautasCards");
     const lblCount = document.getElementById("lblQtdPautasFiltradas");
+    if (!container || !lblCount) return;
     container.innerHTML = "";
 
-    lblCount.textContent = `Exibindo ${pautasFiltradas.length} pautas`;
+    const totalVagasFilt = pautasFiltradas.reduce((acc, p) => acc + (Number(p.vagas !== undefined ? p.vagas : p.quantidade) || 0), 0);
+    lblCount.textContent = `Exibindo ${pautasFiltradas.length} pauta(s) (${totalVagasFilt} vagas)`;
 
     if (pautasFiltradas.length === 0) {
       container.innerHTML = `
         <div class="section-card" style="text-align: center; padding: 30px;">
           <div style="font-size: 32px; margin-bottom: 8px;">🔍</div>
           <h5>Nenhuma pauta encontrada</h5>
-          <p class="text-sm text-muted">Ajuste os filtros de pesquisa ou importe novas pautas na aba WhatsApp.</p>
+          <p class="text-sm text-muted">Ajuste os filtros de Vara, Situação ou Período, ou importe novas pautas na aba WhatsApp.</p>
         </div>
       `;
       return;
@@ -3516,12 +4033,14 @@ async function revalidarSessaoNaNuvem() {
 
     pautasFiltradas.forEach((p) => {
       const dataFmt = formatarDataBr(p.data);
-      const isMarcado = p.situacao === "Marcado";
-      const statusClass = isMarcado ? "status-marcado" : "status-pendente";
-      const badgeClass = isMarcado ? "status-badge-marcado" : "status-badge-pendente";
+      const clsSit = classificarSituacaoFiltro(p.situacao);
+      const statusClass = clsSit === "marcado" ? "status-marcado" : (clsSit === "em_marcacao" ? "status-em-marcacao" : "status-pendente");
+      const badgeClass = clsSit === "marcado" ? "status-badge-marcado" : (clsSit === "em_marcacao" ? "status-badge-em-marcacao" : "status-badge-pendente");
       const vagasNum = p.vagas !== undefined ? p.vagas : p.quantidade;
       const horaTxt = p.horaInicio || p.hora || "08:00";
       const obsTxt = p.observacoes || p.observacao || "";
+      const prazoBadgeHtml = obterBadgePrazoPautaHtml(p);
+      const actionsHtml = renderizarAcoesCardPautaHtml(p);
 
       const card = document.createElement("div");
       card.className = `pauta-card ${statusClass}`;
@@ -3535,12 +4054,12 @@ async function revalidarSessaoNaNuvem() {
         </div>
 
         <div class="pauta-perito">${escapeHtml(p.peritoNome)}</div>
-        <div class="pauta-esp">${escapeHtml(p.especialidade)}</div>
+        <div class="pauta-esp">${escapeHtml(p.especialidade || "-")}</div>
 
         <div class="pauta-details-grid">
           <div class="detail-item">
             <span>Vara:</span>
-            <strong>${escapeHtml(p.vara)}ª Federal</strong>
+            <strong>${escapeHtml(normalizarNumeroVara(p.vara) || p.vara)}ª Federal</strong>
           </div>
           <div class="detail-item">
             <span>Vagas:</span>
@@ -3554,6 +4073,8 @@ async function revalidarSessaoNaNuvem() {
 
         ${p.endereco ? `<div class="pauta-obs" style="margin-bottom:4px;">📍 ${escapeHtml(p.endereco)}</div>` : ""}
         ${obsTxt ? `<div class="pauta-obs">💡 ${escapeHtml(obsTxt)}</div>` : ""}
+        ${prazoBadgeHtml}
+        ${actionsHtml}
       `;
       container.appendChild(card);
     });
@@ -3567,17 +4088,488 @@ async function revalidarSessaoNaNuvem() {
   }
 
   // =========================================================================
-  // 10. GERAÇÃO E EXPORTAÇÃO DE RELATÓRIOS (PDF, CSV E WHATSAPP)
+  // 9B. EDIÇÃO RÁPIDA, ALTERAÇÃO DE SITUAÇÃO & EXCLUSÃO NA NUVEM (E2EE)
   // =========================================================================
+  function encontrarPautaLocalPorIdentificador(idParam, keyParam) {
+    return (todasPautas || []).find((p) => {
+      if (idParam && String(p.id || "") === String(idParam)) return true;
+      if (keyParam && gerarChaveUnicaPauta(p) === keyParam) return true;
+      return false;
+    }) || null;
+  }
+
+  function tratarCliqueAcaoPautaCard(e) {
+    const btn = e.target.closest("[data-pauta-action]");
+    if (!btn) return;
+    const action = btn.getAttribute("data-pauta-action");
+    const idParam = btn.getAttribute("data-pauta-id") || "";
+    const keyParam = btn.getAttribute("data-pauta-key") || "";
+    const pauta = encontrarPautaLocalPorIdentificador(idParam, keyParam);
+    if (!pauta) {
+      mostrarToast("Pauta não localizada na memória atual. Sincronize e tente novamente.", "warn");
+      return;
+    }
+
+    if (action === "ciclar-situacao") {
+      alternarSituacaoRapidaPauta(pauta, btn);
+    } else if (action === "editar") {
+      abrirModalEditarPauta(pauta);
+    } else if (action === "excluir") {
+      confirmarExcluirPauta(pauta, btn);
+    }
+  }
+
+  async function gravarMutacaoPautaEscalaNuvem({ modo, pautaOriginal, pautaNova = null }) {
+    if (!sessaoUsuario) throw new Error("Sessão não inicializada.");
+    if (!podeEnviarPautasNaSessao()) throw new Error("Perfil Somente Leitura não possui permissão para alterar a escala.");
+    const subId = sessaoUsuario.subsecaoId;
+    if (!isVaraAutorizadaNaSessao(pautaOriginal?.vara, sessaoUsuario, subId)) {
+      throw new Error("A Vara desta pauta não está autorizada para seu perfil.");
+    }
+    if (pautaNova && !isVaraAutorizadaNaSessao(pautaNova.vara, sessaoUsuario, subId)) {
+      throw new Error("A Vara selecionada não está autorizada para seu perfil.");
+    }
+
+    const chaveOrig = gerarChaveUnicaPauta(pautaOriginal);
+    const idOrig = pautaOriginal?.id ? String(pautaOriginal.id) : "";
+    const now = Date.now();
+    let listaFinalNuvem = null;
+
+    const temProjetoNuvem = Boolean(
+      sessaoUsuario.projectId &&
+      sessaoUsuario.projectId.trim() &&
+      !sessaoUsuario.projectId.includes("exemplo")
+    );
+
+    if (temProjetoNuvem) {
+      if (typeof navigator !== "undefined" && navigator.onLine === false) {
+        throw new Error("Edição e exclusão direta exigem conexão com a internet para sincronizar com a nuvem.");
+      }
+
+      let chaveNuvem = obterChaveNuvemSessao();
+      if (!chaveNuvem) {
+        const digitada = window.prompt("🔐 Informe a Chave / Senha AES-256 da Vara para salvar a alteração com segurança:") || "";
+        if (!digitada.trim()) throw new Error("Chave AES-256 obrigatória para gravar na nuvem.");
+        chaveNuvem = digitada.trim();
+        salvarChaveNuvemSessao(chaveNuvem, false);
+      }
+
+      const urlGet = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(sessaoUsuario.projectId)}/databases/(default)/documents/subsecoes/${encodeURIComponent(subId)}`;
+      const respGet = await fetch(urlGet, { method: "GET", cache: "no-cache" });
+
+      let escalaNuvemAtual = [];
+      let tombstonesNuvem = {};
+      if (respGet.ok) {
+        const doc = await respGet.json();
+        const fields = doc.fields || {};
+
+        if (fields.escalaTombstonesJson?.stringValue) {
+          try {
+            const decTomb = await decodificarOuDecifrarDadoNuvemMobile(
+              fields.escalaTombstonesJson.stringValue,
+              fields.ivTombstones?.stringValue || fields.ivEscala?.stringValue,
+              fields.saltTombstones?.stringValue || fields.saltEscala?.stringValue,
+              chaveNuvem
+            );
+            if (decTomb && typeof decTomb === "object" && !Array.isArray(decTomb)) {
+              tombstonesNuvem = decTomb;
+            }
+          } catch (eTomb) {}
+        }
+
+        if (fields.escalaPautasJson?.stringValue) {
+          let dec = null;
+          try {
+            dec = await decodificarOuDecifrarDadoNuvemMobile(
+              fields.escalaPautasJson.stringValue,
+              fields.ivEscala?.stringValue || fields.iv?.stringValue,
+              fields.saltEscala?.stringValue || fields.salt?.stringValue,
+              chaveNuvem
+            );
+          } catch (eDec) {
+            throw new Error("Chave AES-256 incorreta. Operação cancelada para proteger os dados da nuvem.");
+          }
+          if (!Array.isArray(dec)) {
+            throw new Error("Não foi possível decifrar a escala da nuvem com a chave atual.");
+          }
+          escalaNuvemAtual = dec;
+        }
+      } else if (respGet.status !== 404) {
+        throw new Error(`Falha ao ler nuvem (HTTP ${respGet.status}).`);
+      }
+
+      const correspondeItem = (item) => {
+        if (!item) return false;
+        if (idOrig && item.id && String(item.id) === idOrig) return true;
+        return gerarChaveUnicaPauta(item) === chaveOrig;
+      };
+
+      if (modo === "editar" && pautaNova) {
+        const copiaLimpa = Parser ? Parser.prepararPautaCanonica(pautaNova, bancoPeritosMobile) : { ...pautaNova };
+        delete copiaLimpa._meta;
+        copiaLimpa.id = idOrig || copiaLimpa.id || `pauta_mob_${now}`;
+        copiaLimpa.updatedAt = now;
+        const idxMatch = escalaNuvemAtual.findIndex(correspondeItem);
+        if (idxMatch >= 0) {
+          escalaNuvemAtual[idxMatch] = { ...escalaNuvemAtual[idxMatch], ...copiaLimpa };
+        } else {
+          escalaNuvemAtual.push(copiaLimpa);
+        }
+        const chaveNova = gerarChaveUnicaPauta(copiaLimpa);
+        if (tombstonesNuvem[chaveOrig]) delete tombstonesNuvem[chaveOrig];
+        if (tombstonesNuvem[chaveNova]) delete tombstonesNuvem[chaveNova];
+        if (idOrig && tombstonesNuvem[idOrig]) delete tombstonesNuvem[idOrig];
+      } else if (modo === "excluir") {
+        escalaNuvemAtual = escalaNuvemAtual.filter((item) => !correspondeItem(item));
+        const tombReg = {
+          deletedAt: now,
+          deletedBy: sessaoUsuario.usuarioCpf || "mobile",
+          id: idOrig
+        };
+        if (chaveOrig && chaveOrig !== "___") tombstonesNuvem[chaveOrig] = tombReg;
+        if (idOrig) tombstonesNuvem[idOrig] = tombReg;
+      }
+
+      listaFinalNuvem = escalaNuvemAtual;
+
+      const encoderUtf8 = new TextEncoder();
+      const escalaStr = JSON.stringify(escalaNuvemAtual);
+      const bytesBruto = encoderUtf8.encode(escalaStr).length;
+      const opcoesCripto = Math.ceil(bytesBruto * 1.34) >= 400000
+        ? { comprimirGzip: true }
+        : { autoGzipAcimaBytes: 131072 };
+
+      const resEscala = await cifrarTextoAESMobile(escalaStr, chaveNuvem, opcoesCripto);
+      const resTomb = await cifrarTextoAESMobile(JSON.stringify(tombstonesNuvem), chaveNuvem, { autoGzipAcimaBytes: 65536 });
+
+      const updateFields = [
+        "subsecaoId",
+        "encrypted",
+        "escalaPautasJson",
+        "ivEscala",
+        "saltEscala",
+        "escalaTombstonesJson",
+        "ivTombstones",
+        "saltTombstones",
+        "timestamp",
+        "atualizadoPor"
+      ];
+      const maskQuery = updateFields.map((f) => `updateMask.fieldPaths=${encodeURIComponent(f)}`).join("&");
+      const payloadPatch = {
+        fields: {
+          subsecaoId: { stringValue: subId },
+          encrypted: { booleanValue: true },
+          escalaPautasJson: { stringValue: resEscala.data },
+          ivEscala: { stringValue: resEscala.iv },
+          saltEscala: { stringValue: resEscala.salt },
+          escalaTombstonesJson: { stringValue: resTomb.data },
+          ivTombstones: { stringValue: resTomb.iv },
+          saltTombstones: { stringValue: resTomb.salt },
+          timestamp: { integerValue: String(now) },
+          atualizadoPor: { stringValue: `Maestro Mobile (${sessaoUsuario.usuarioCpf || "Edição"})` }
+        }
+      };
+
+      const respPatch = await fetch(`${urlGet}?${maskQuery}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payloadPatch)
+      });
+      if (!respPatch.ok) {
+        throw new Error(`Falha ao gravar alteração na nuvem (HTTP ${respPatch.status}).`);
+      }
+    } else {
+      const correspondeLocal = (item) => {
+        if (!item) return false;
+        if (idOrig && item.id && String(item.id) === idOrig) return true;
+        return gerarChaveUnicaPauta(item) === chaveOrig;
+      };
+      const baseLocal = [...(todasPautas || [])];
+      if (modo === "editar" && pautaNova) {
+        const copia = Parser ? Parser.prepararPautaCanonica(pautaNova, bancoPeritosMobile) : { ...pautaNova };
+        delete copia._meta;
+        copia.id = idOrig || copia.id || `pauta_mob_${now}`;
+        copia.updatedAt = now;
+        const idxM = baseLocal.findIndex(correspondeLocal);
+        if (idxM >= 0) baseLocal[idxM] = { ...baseLocal[idxM], ...copia };
+        else baseLocal.push(copia);
+      } else if (modo === "excluir") {
+        listaFinalNuvem = baseLocal.filter((x) => !correspondeLocal(x));
+      }
+      if (!listaFinalNuvem) listaFinalNuvem = baseLocal;
+    }
+
+    if (ehAmbienteExtensaoChrome() && Array.isArray(listaFinalNuvem)) {
+      try {
+        await chrome.storage.local.set({ [`escalaPautas_${subId}`]: listaFinalNuvem });
+      } catch (eExt) {}
+    }
+
+    todasPautas = aplicarFiltroRestritoSubsecao(converterPautasFirestore(listaFinalNuvem || []), subId);
+    salvarCacheLocal(subId, todasPautas);
+    ultimaSyncEscalaTs = now;
+    atualizarIndicadorSync();
+    atualizarInterfaceCompleta();
+  }
+
+  async function alternarSituacaoRapidaPauta(pauta, btnEl = null) {
+    const clsAtual = classificarSituacaoFiltro(pauta.situacao);
+    let proxima = "Em marcação";
+    if (clsAtual === "em_marcacao") proxima = "Marcado";
+    else if (clsAtual === "marcado") proxima = "Não marcado";
+
+    const origTxt = btnEl ? btnEl.textContent : "";
+    if (btnEl) {
+      btnEl.disabled = true;
+      btnEl.textContent = "⏳...";
+    }
+    try {
+      await gravarMutacaoPautaEscalaNuvem({
+        modo: "editar",
+        pautaOriginal: pauta,
+        pautaNova: { ...pauta, situacao: proxima }
+      });
+      mostrarToast(`Situação atualizada para "${proxima}".`, "success");
+    } catch (err) {
+      mostrarToast("Erro ao atualizar situação: " + err.message, "error", 4200);
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.textContent = origTxt;
+      }
+    }
+  }
+
+  async function confirmarExcluirPauta(pauta, btnEl = null) {
+    const desc = `${pauta.peritoNome} (${formatarDataBr(pauta.data)} • ${pauta.horaInicio || "08:00"} • ${normalizarNumeroVara(pauta.vara) || pauta.vara}ª VF)`;
+    if (!confirm(`🗑️ Deseja realmente excluir esta pauta da escala?\n\n${desc}\n\nA exclusão será sincronizada com todos os computadores.`)) {
+      return;
+    }
+    if (btnEl) btnEl.disabled = true;
+    try {
+      await gravarMutacaoPautaEscalaNuvem({
+        modo: "excluir",
+        pautaOriginal: pauta
+      });
+      mostrarToast("Pauta excluída e sincronizada.", "success");
+    } catch (err) {
+      mostrarToast("Erro ao excluir pauta: " + err.message, "error", 4200);
+      if (btnEl) btnEl.disabled = false;
+    }
+  }
+
+  function atualizarVisibilidadeEnderecoModalEditar() {
+    const localVal = document.getElementById("editLocal")?.value || "";
+    const box = document.getElementById("boxEditEndereco");
+    if (!box) return;
+    const ehFora = Parser ? Parser.ehLocalFora(localVal) : false;
+    box.style.display = ehFora ? "block" : "none";
+  }
+
+  function atualizarPreviewCalcModalEditar() {
+    const dataVal = document.getElementById("editData")?.value || "";
+    const horaVal = document.getElementById("editHoraInicio")?.value || "08:00";
+    const qtdVal = parseInt(document.getElementById("editQuantidade")?.value || "20", 10) || 1;
+    const intVal = parseInt(document.getElementById("editIntervaloMin")?.value || "10", 10) || 10;
+
+    const term = Parser ? Parser.calcularHorarioTermino(horaVal, intVal, qtdVal) : "--:--";
+    const limIso = (Parser && dataVal) ? Parser.calcularDataLimite8DiasUteis(dataVal) : "";
+    const elTerm = document.getElementById("editCalcTermino");
+    const elLim = document.getElementById("editCalcLimite");
+    if (elTerm) elTerm.textContent = term || "--:--";
+    if (elLim) elLim.textContent = limIso ? formatarDataBr(limIso) : "-";
+  }
+
+  function abrirModalEditarPauta(pauta) {
+    if (!pauta || !podeEnviarPautasNaSessao()) return;
+    pautaEmEdicaoModal = pauta;
+
+    const modal = document.getElementById("modalEditarPautaMobile");
+    const subId = sessaoUsuario?.subsecaoId || "sobral";
+    const varasAuth = resolverVarasAutorizadasSubsecao(sessaoUsuario, subId);
+
+    const selVara = document.getElementById("editVara");
+    if (selVara) {
+      const vNorm = normalizarNumeroVara(pauta.vara);
+      selVara.innerHTML = varasAuth.map((v) =>
+        `<option value="${escapeHtml(v)}" ${vNorm === v ? "selected" : ""}>${escapeHtml(v)}ª Vara Federal</option>`
+      ).join("");
+      selVara.disabled = varasAuth.length === 1;
+    }
+
+    const selLocal = document.getElementById("editLocal");
+    if (selLocal) {
+      const localAtual = pauta.local || "Justiça Federal";
+      const opts = LOCAIS_PADRAO_OPTIONS.some((o) => o.value === localAtual)
+        ? LOCAIS_PADRAO_OPTIONS
+        : [{ value: localAtual, label: localAtual }, ...LOCAIS_PADRAO_OPTIONS];
+      selLocal.innerHTML = opts.map((o) =>
+        `<option value="${escapeHtml(o.value)}" ${localAtual === o.value ? "selected" : ""}>${escapeHtml(o.label)}</option>`
+      ).join("");
+    }
+
+    const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ""; };
+    setVal("editPautaId", pauta.id || "");
+    setVal("editPautaChaveOrig", gerarChaveUnicaPauta(pauta));
+    setVal("editPeritoNome", pauta.peritoNome || "");
+    setVal("editEspecialidade", pauta.especialidade || "");
+    setVal("editData", pauta.data || "");
+    setVal("editHoraInicio", pauta.horaInicio || pauta.hora || "08:00");
+    setVal("editQuantidade", pauta.quantidade !== undefined ? pauta.quantidade : (pauta.vagas || 20));
+    setVal("editIntervaloMin", pauta.intervaloMin !== undefined ? pauta.intervaloMin : (pauta.duracao || 10));
+    setVal("editSituacao", pauta.situacao || "Não marcado");
+    setVal("editEndereco", pauta.endereco || "");
+    setVal("editObservacoes", pauta.observacoes || pauta.observacao || "");
+
+    atualizarVisibilidadeEnderecoModalEditar();
+    atualizarPreviewCalcModalEditar();
+    if (modal) modal.classList.add("open");
+  }
+
+  function fecharModalEditarPauta() {
+    const modal = document.getElementById("modalEditarPautaMobile");
+    if (modal) modal.classList.remove("open");
+    pautaEmEdicaoModal = null;
+  }
+
+  async function salvarEdicaoPautaModal() {
+    if (!pautaEmEdicaoModal) return;
+    const getVal = (id) => String(document.getElementById(id)?.value || "").trim();
+
+    const peritoNome = getVal("editPeritoNome");
+    const data = getVal("editData");
+    const horaInicio = getVal("editHoraInicio") || "08:00";
+    const quantidade = Math.max(1, parseInt(getVal("editQuantidade"), 10) || 1);
+    const intervaloMin = Math.max(1, parseInt(getVal("editIntervaloMin"), 10) || 10);
+    const vara = normalizarNumeroVara(getVal("editVara"));
+    const local = getVal("editLocal") || "Justiça Federal";
+    const endereco = getVal("editEndereco");
+    const situacao = getVal("editSituacao") || "Não marcado";
+    const especialidade = getVal("editEspecialidade");
+    const observacoes = getVal("editObservacoes");
+
+    if (!peritoNome || !data || !vara) {
+      mostrarToast("Preencha Perito, Data e Vara.", "warn");
+      return;
+    }
+    if (Parser && Parser.ehLocalFora(local) && !endereco) {
+      mostrarToast("Informe o endereço externo para perícias fora do prédio.", "warn");
+      return;
+    }
+
+    const btnSalvar = document.getElementById("btnSalvarModalEditarPauta");
+    if (btnSalvar) {
+      btnSalvar.disabled = true;
+      btnSalvar.textContent = "⏳ Salvando...";
+    }
+
+    try {
+      await gravarMutacaoPautaEscalaNuvem({
+        modo: "editar",
+        pautaOriginal: pautaEmEdicaoModal,
+        pautaNova: {
+          ...pautaEmEdicaoModal,
+          peritoNome,
+          especialidade,
+          data,
+          horaInicio,
+          hora: horaInicio,
+          quantidade,
+          vagas: quantidade,
+          intervaloMin,
+          duracao: intervaloMin,
+          vara,
+          local,
+          endereco: (Parser && Parser.ehLocalFora(local)) ? endereco : "",
+          situacao,
+          observacoes,
+          observacao: observacoes
+        }
+      });
+      fecharModalEditarPauta();
+      mostrarToast("Pauta atualizada e sincronizada!", "success");
+    } catch (err) {
+      mostrarToast("Erro ao salvar: " + err.message, "error", 4500);
+    } finally {
+      if (btnSalvar) {
+        btnSalvar.disabled = false;
+        btnSalvar.textContent = "☁️ Salvar Alterações";
+      }
+    }
+  }
+
+  // =========================================================================
+  // 10. GERAÇÃO E EXPORTAÇÃO DE RELATÓRIOS (FILTRADOS POR VARA/SITUAÇÃO/MÊS)
+  // =========================================================================
+  function atualizarEstadoFiltrosRelatorio() {
+    const selPer = document.getElementById("relFiltroPeriodo");
+    const inpMes = document.getElementById("relFiltroMesInput");
+    if (selPer && inpMes) {
+      inpMes.disabled = selPer.value !== "mes_selecionado";
+    }
+    atualizarResumoFiltroRelatorio();
+  }
+
+  function obterPautasFiltradasRelatorio(forcarTodasDatas = false) {
+    const periodo = forcarTodasDatas ? "todos" : (document.getElementById("relFiltroPeriodo")?.value || "mes_selecionado");
+    const mesInput = document.getElementById("relFiltroMesInput")?.value || `${anoAtivo}-${String(mesAtivo + 1).padStart(2, "0")}`;
+    const varaFiltro = document.getElementById("relFiltroVara")?.value || "";
+    const vNormFiltro = varaFiltro ? normalizarNumeroVara(varaFiltro) : "";
+    const sitFiltro = document.getElementById("relFiltroSituacao")?.value || "todos";
+    const hojeIso = obterHojeIsoLocal();
+
+    const lista = (todasPautas || []).filter((p) => {
+      if (vNormFiltro && normalizarNumeroVara(p.vara) !== vNormFiltro) return false;
+      if (!correspondeFiltroSituacao(p, sitFiltro)) return false;
+      if (periodo === "mes_selecionado" && (!p.data || !p.data.startsWith(mesInput))) return false;
+      if (periodo === "proximas" && (!p.data || p.data < hojeIso)) return false;
+      return true;
+    }).sort((a, b) => (a.data || "").localeCompare(b.data || "") || (a.horaInicio || "").localeCompare(b.horaInicio || ""));
+
+    return { lista, periodo, mesInput, varaFiltro, sitFiltro };
+  }
+
+  function atualizarResumoFiltroRelatorio() {
+    const el = document.getElementById("lblResumoFiltroRelatorio");
+    if (!el || !sessaoUsuario) return;
+    const { lista } = obterPautasFiltradasRelatorio(false);
+    const totalVagas = lista.reduce((acc, p) => acc + (Number(p.vagas !== undefined ? p.vagas : p.quantidade) || 1), 0);
+    el.textContent = `${lista.length} pauta(s) • ${totalVagas} vagas selecionadas para o relatório`;
+  }
+
+  function descreverFiltroSituacaoLabel(sit) {
+    if (sit === "marcado") return "Somente Marcadas";
+    if (sit === "nao_marcado") return "Somente Não marcadas";
+    if (sit === "em_marcacao") return "Somente Em marcação";
+    if (sit === "pendente") return "Somente Pendentes";
+    return "Todas as situações";
+  }
+
+  function descreverMesInputBr(mesIso) {
+    const pts = String(mesIso || "").split("-");
+    if (pts.length === 2) {
+      const mIdx = parseInt(pts[1], 10) - 1;
+      return `${MESES_NOMES[mIdx] || pts[1]} de ${pts[0]}`;
+    }
+    return `${MESES_NOMES[mesAtivo]} de ${anoAtivo}`;
+  }
+
   window.gerarRelatorioPdf = function (tipo) {
+    if (!sessaoUsuario) return;
     const subInfo = SUBSECOES_MAP[sessaoUsuario.subsecaoId] || { nome: sessaoUsuario.subsecaoNome };
     const varasAuth = resolverVarasAutorizadasSubsecao(sessaoUsuario, sessaoUsuario.subsecaoId);
     const varasSub = subInfo.varas || [];
     const escopoTitulo = (sessaoUsuario.role !== "Master" && varasAuth.length < varasSub.length)
       ? `${subInfo.nome} • ${varasAuth.map((v) => `${v}ª VF`).join(", ")}`
       : subInfo.nome;
-    const lista = tipo === "mes" ? obterPautasDoMesAtivo() : todasPautas;
-    const tituloPeriodo = tipo === "mes" ? `${MESES_NOMES[mesAtivo]} de ${anoAtivo}` : "Todas as Pautas Cadastradas";
+
+    const forcarTodas = tipo === "completo";
+    const { lista, periodo, mesInput, varaFiltro, sitFiltro } = obterPautasFiltradasRelatorio(forcarTodas);
+
+    const tituloPeriodoBase = periodo === "mes_selecionado"
+      ? descreverMesInputBr(mesInput)
+      : (periodo === "proximas" ? "A partir de hoje" : "Todas as Datas");
+    const filtroVaraTxt = varaFiltro ? `${normalizarNumeroVara(varaFiltro)}ª Vara Federal` : "Todas as Varas";
+    const filtroSitTxt = descreverFiltroSituacaoLabel(sitFiltro);
 
     let totalVagas = 0;
     let totalMarcadas = 0;
@@ -3597,7 +4589,7 @@ async function revalidarSessaoNaNuvem() {
         <td style="text-align: center;">${idx + 1}</td>
         <td><strong>${escapeHtml(formatarDataBr(p.data))}</strong><br><small>${escapeHtml(p.horaInicio || p.hora)}</small></td>
         <td><strong>${escapeHtml(p.peritoNome)}</strong><br><small>${escapeHtml(p.especialidade)}</small></td>
-        <td style="text-align: center;">${escapeHtml(p.vara)}ª VF</td>
+        <td style="text-align: center;">${escapeHtml(normalizarNumeroVara(p.vara) || p.vara)}ª VF</td>
         <td style="text-align: center; font-weight: bold;">${escapeHtml(p.vagas !== undefined ? p.vagas : p.quantidade)}</td>
         <td style="text-align: center;">
           <span style="font-weight: bold; color: ${p.situacao === "Marcado" ? "#059669" : "#D97706"};">
@@ -3623,11 +4615,14 @@ async function revalidarSessaoNaNuvem() {
           Subseção Judiciária de ${escapeHtml(escopoTitulo)} • Maestro PJe
         </div>
         <div style="font-size: 11px; color: #64748B; margin-top: 4px;">
-          Período: <strong>${escapeHtml(tituloPeriodo)}</strong> • Emitido em: ${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR")}
+          Período: <strong>${escapeHtml(tituloPeriodoBase)}</strong> • Vara: <strong>${escapeHtml(filtroVaraTxt)}</strong> • Situação: <strong>${escapeHtml(filtroSitTxt)}</strong>
+        </div>
+        <div style="font-size: 10.5px; color: #64748B; margin-top: 2px;">
+          Emitido em: ${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR")}
         </div>
       </div>
 
-      <div style="display: flex; justify-content: space-between; background: #F8FAFC; border: 1px solid #CBD5E1; padding: 12px; border-radius: 6px; margin-bottom: 16px; font-size: 12px;">
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; background: #F8FAFC; border: 1px solid #CBD5E1; padding: 12px; border-radius: 6px; margin-bottom: 16px; font-size: 12px;">
         <div><strong>Total de Vagas:</strong> ${totalVagas}</div>
         <div><strong style="color: #059669;">Perícias Marcadas:</strong> ${totalMarcadas} (${taxa}%)</div>
         <div><strong style="color: #D97706;">Perícias Pendentes:</strong> ${totalPendentes} (${100 - taxa}%)</div>
@@ -3647,7 +4642,7 @@ async function revalidarSessaoNaNuvem() {
           </tr>
         </thead>
         <tbody>
-          ${linhasHtml}
+          ${linhasHtml || '<tr><td colspan="7" style="text-align:center;padding:16px;">Nenhuma pauta encontrada com os filtros selecionados.</td></tr>'}
         </tbody>
       </table>
 
@@ -3660,13 +4655,83 @@ async function revalidarSessaoNaNuvem() {
     previewArea.scrollIntoView({ behavior: "smooth" });
   };
 
+  function gerarRelatorioPdfPautaPjeDia() {
+    if (!sessaoUsuario) return;
+    const varaFiltro = document.getElementById("relFiltroVara")?.value || "";
+    const vNormFiltro = varaFiltro ? normalizarNumeroVara(varaFiltro) : "";
+    const listaDia = (todasPericiasPje || []).filter((p) => {
+      if (p.dataPericiaIso !== dataSelecionadaPorDia) return false;
+      if (vNormFiltro && (p.varaNum || extrairVaraNumeroPericiaMobile(p.vara)) !== vNormFiltro) return false;
+      return true;
+    }).sort((a, b) => (a.perito || "").localeCompare(b.perito || "", "pt-BR") || (a.horaPericia || "").localeCompare(b.horaPericia || ""));
+
+    if (listaDia.length === 0) {
+      mostrarToast(`Nenhuma perícia PJe encontrada para ${formatarDataBr(dataSelecionadaPorDia)} nesta Vara.`, "warn", 3500);
+      return;
+    }
+
+    const subInfo = SUBSECOES_MAP[sessaoUsuario.subsecaoId] || { nome: sessaoUsuario.subsecaoNome };
+    const varaTxt = vNormFiltro ? `${vNormFiltro}ª Vara Federal` : "Todas as Varas";
+
+    const linhasHtml = listaDia.map((item, idx) => `
+      <tr>
+        <td style="text-align: center;">${idx + 1}</td>
+        <td><strong>${escapeHtml(item.horaPericia || "--:--")}</strong>${item.sala ? `<br><small>${escapeHtml(item.sala)}</small>` : ""}</td>
+        <td><strong>${escapeHtml(item.perito)}</strong><br><small>${escapeHtml(item.especialidade || "")}</small></td>
+        <td><strong>${escapeHtml(item.periciado)}</strong>${item.urgenciaMedica ? "<br><small style='color:#DC2626;'>PRIORIDADE</small>" : ""}</td>
+        <td style="font-family: monospace;">${escapeHtml(item.processo)}</td>
+        <td style="text-align: center;">${escapeHtml(item.varaNum || item.vara || "-")}</td>
+        <td>${escapeHtml(obterBadgeStatusAtendimentoMobile(item).label)}</td>
+      </tr>
+    `).join("");
+
+    const previewArea = document.getElementById("areaPreviewRelatorio");
+    const container = document.getElementById("conteudoRelatorioImpressao");
+    container.innerHTML = `
+      <div class="print-header">
+        <div style="font-size: 13px; font-weight: bold; text-transform: uppercase; color: #334155;">
+          PODER JUDICIÁRIO • JUSTIÇA FEDERAL DA 5ª REGIÃO
+        </div>
+        <div class="print-title" style="margin: 4px 0;">
+          PAUTA DIÁRIA DE PERÍCIAS JUDICIAIS (PJE)
+        </div>
+        <div class="print-subtitle" style="font-weight: 600; color: #0284C7;">
+          Subseção de ${escapeHtml(subInfo.nome)} • ${escapeHtml(varaTxt)}
+        </div>
+        <div style="font-size: 11px; color: #64748B; margin-top: 4px;">
+          Data das Perícias: <strong>${escapeHtml(formatarDataBr(dataSelecionadaPorDia))}</strong> • Total: <strong>${listaDia.length} perícia(s)</strong>
+        </div>
+      </div>
+
+      <table class="print-table">
+        <thead>
+          <tr>
+            <th style="width: 28px; text-align: center;">#</th>
+            <th style="width: 65px;">Horário</th>
+            <th>Perito</th>
+            <th>Periciando</th>
+            <th>Processo</th>
+            <th style="width: 45px; text-align: center;">Vara</th>
+            <th style="width: 90px;">Status</th>
+          </tr>
+        </thead>
+        <tbody>${linhasHtml}</tbody>
+      </table>
+    `;
+
+    previewArea.style.display = "block";
+    previewArea.scrollIntoView({ behavior: "smooth" });
+  }
+
   window.fecharPreviewRelatorio = function () {
-    document.getElementById("areaPreviewRelatorio").style.display = "none";
+    const area = document.getElementById("areaPreviewRelatorio");
+    if (area) area.style.display = "none";
   };
 
   window.exportarRelatorioCsv = function () {
+    if (!sessaoUsuario) return;
     const subInfo = SUBSECOES_MAP[sessaoUsuario.subsecaoId] || { nome: sessaoUsuario.subsecaoNome };
-    const lista = obterPautasDoMesAtivo();
+    const { lista, periodo, mesInput, varaFiltro, sitFiltro } = obterPautasFiltradasRelatorio(false);
 
     let csv = "\uFEFF";
     csv += "Data;Hora;Perito;Especialidade;Vara;Vagas;Situacao;Local;Endereco;Observacoes;Subsecao\n";
@@ -3677,7 +4742,7 @@ async function revalidarSessaoNaNuvem() {
         sanitizarCelulaCSV(p.horaInicio || p.hora || "08:00"),
         sanitizarCelulaCSV(p.peritoNome || ""),
         sanitizarCelulaCSV(p.especialidade || ""),
-        sanitizarCelulaCSV(`${p.vara}ª Vara Federal`),
+        sanitizarCelulaCSV(`${normalizarNumeroVara(p.vara) || p.vara}ª Vara Federal`),
         sanitizarCelulaCSV(p.vagas !== undefined ? p.vagas : (p.quantidade || 1)),
         sanitizarCelulaCSV(p.situacao || "Não marcado"),
         sanitizarCelulaCSV(p.local || ""),
@@ -3688,15 +4753,19 @@ async function revalidarSessaoNaNuvem() {
       csv += linha + "\n";
     });
 
+    const sufixoPer = periodo === "mes_selecionado" ? mesInput : periodo;
+    const sufixoVara = varaFiltro ? `_Vara${normalizarNumeroVara(varaFiltro)}` : "";
+    const sufixoSit = sitFiltro !== "todos" ? `_${sitFiltro}` : "";
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Maestro_PJe_Pautas_${sessaoUsuario.subsecaoId}_${MESES_NOMES[mesAtivo]}_${anoAtivo}.csv`;
+    a.download = `Maestro_PJe_${sessaoUsuario.subsecaoId}_${sufixoPer}${sufixoVara}${sufixoSit}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    mostrarToast(`CSV exportado com ${lista.length} pauta(s).`, "success");
   };
 
   function gerarTextoResumoWhatsApp() {
@@ -3706,7 +4775,7 @@ async function revalidarSessaoNaNuvem() {
     const escopoTxt = (sessaoUsuario.role !== "Master" && varasAuth.length < varasSub.length)
       ? `${subInfo.nome} (${varasAuth.map((v) => `${v}ª VF`).join(", ")})`
       : subInfo.nome;
-    const lista = obterPautasDoMesAtivo();
+    const { lista, periodo, mesInput, varaFiltro, sitFiltro } = obterPautasFiltradasRelatorio(false);
 
     let totalVagas = 0;
     let marcadas = 0;
@@ -3719,7 +4788,7 @@ async function revalidarSessaoNaNuvem() {
       if (p.situacao === "Marcado") marcadas += v;
       else if (ehSituacaoPendente(p.situacao)) pendentes += v;
 
-      const vNome = `${p.vara}ª VF`;
+      const vNome = `${normalizarNumeroVara(p.vara) || p.vara}ª VF`;
       if (!varasMap[vNome]) varasMap[vNome] = { m: 0, p: 0, tot: 0 };
       varasMap[vNome].tot += v;
       if (p.situacao === "Marcado") varasMap[vNome].m += v;
@@ -3727,11 +4796,17 @@ async function revalidarSessaoNaNuvem() {
     });
 
     const taxa = totalVagas > 0 ? Math.round((marcadas / totalVagas) * 100) : 0;
+    const perLabel = periodo === "mes_selecionado"
+      ? descreverMesInputBr(mesInput)
+      : (periodo === "proximas" ? "A partir de hoje" : "Todas as datas");
 
     let txt = `⚖️ *MAESTRO PJE - RESUMO DE PAUTAS*\n`;
-    txt += `📍 *Subseção:* ${escopoTxt}\n`;
-    txt += `📅 *Período:* ${MESES_NOMES[mesAtivo]}/${anoAtivo}\n\n`;
+    txt += `📍 *Subseção:* ${escopoTxt}${varaFiltro ? ` • ${normalizarNumeroVara(varaFiltro)}ª VF` : ""}\n`;
+    txt += `📅 *Período:* ${perLabel}\n`;
+
+    txt += `🎯 *Situação:* ${descreverFiltroSituacaoLabel(sitFiltro)}\n\n`;
     txt += `📊 *NÚMEROS GERAIS:*\n`;
+    txt += `• *Total de Blocos:* ${lista.length} pautas\n`;
     txt += `• *Total de Vagas:* ${totalVagas} perícias\n`;
     txt += `• 🟢 *Perícias Marcadas:* ${marcadas} (${taxa}%)\n`;
     txt += `• 🟡 *Perícias Pendentes:* ${pendentes} (${100 - taxa}%)\n\n`;
@@ -3746,7 +4821,7 @@ async function revalidarSessaoNaNuvem() {
   window.copiarResumoWhatsApp = function () {
     const txt = gerarTextoResumoWhatsApp();
     navigator.clipboard.writeText(txt).then(() => {
-      alert("✅ Resumo copiado para a Área de Transferência!\n\nAgora você pode colar diretamente no WhatsApp ou e-mail.");
+      mostrarToast("Resumo copiado para a Área de Transferência!", "success");
     }).catch(() => {
       alert("Resumo:\n\n" + txt);
     });
@@ -3759,8 +4834,199 @@ async function revalidarSessaoNaNuvem() {
 
   window.abrirRelatorioRapido = function () {
     window.trocarAba("tabRelatorios");
-    window.gerarRelatorioPdf("mes");
+    window.gerarRelatorioPdf("filtrado");
   };
+
+  // =========================================================================
+  // 10B. MODAIS: DIRETÓRIO DE PERITOS & CONFIGURAÇÕES DA SESSÃO
+  // =========================================================================
+  function abrirModalPeritos() {
+    const modal = document.getElementById("modalPeritosMobile");
+    if (!modal) return;
+    renderizarDiretorioPeritos();
+    modal.classList.add("open");
+  }
+
+  function fecharModalPeritos() {
+    document.getElementById("modalPeritosMobile")?.classList.remove("open");
+  }
+
+  function renderizarDiretorioPeritos() {
+    const listaEl = document.getElementById("listaPeritosModal");
+    const lblTotal = document.getElementById("lblTotalPeritosModal");
+    if (!listaEl) return;
+
+    const busca = removerAcentosLowerMobile(document.getElementById("filtroBuscaPeritosModal")?.value || "");
+    const mapa = new Map();
+
+    (bancoPeritosMobile || []).forEach((p) => {
+      if (!p || !p.nome) return;
+      const k = removerAcentosLowerMobile(p.nome);
+      mapa.set(k, {
+        nome: p.nome,
+        especialidade: p.especialidade || p.atuacao || "",
+        local: p.atendeFora ? (p.localExternoPadrao || "Clínica Própria") : "Justiça Federal",
+        endereco: p.endereco || "",
+        procsPorPauta: p.procsPorPauta || p.padraoPauta?.vagasManha || "",
+        intervaloMin: p.intervaloMin || "",
+        pautasCount: 0,
+        pendentesCount: 0
+      });
+    });
+
+    (todasPautas || []).forEach((p) => {
+      if (!p || !p.peritoNome) return;
+      const k = removerAcentosLowerMobile(p.peritoNome);
+      if (!mapa.has(k)) {
+        mapa.set(k, {
+          nome: p.peritoNome,
+          especialidade: p.especialidade || "",
+          local: p.local || "Justiça Federal",
+          endereco: p.endereco || "",
+          procsPorPauta: p.quantidade || p.vagas || "",
+          intervaloMin: p.intervaloMin || "",
+          pautasCount: 0,
+          pendentesCount: 0
+        });
+      }
+      const reg = mapa.get(k);
+      reg.pautasCount++;
+      if (ehSituacaoPendente(p.situacao)) reg.pendentesCount++;
+      if (!reg.especialidade && p.especialidade) reg.especialidade = p.especialidade;
+      if (!reg.endereco && p.endereco) reg.endereco = p.endereco;
+    });
+
+    const itens = Array.from(mapa.values())
+      .filter((item) => {
+        if (!busca) return true;
+        const hay = removerAcentosLowerMobile(`${item.nome} ${item.especialidade} ${item.local} ${item.endereco}`);
+        return hay.includes(busca);
+      })
+      .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+
+    if (lblTotal) lblTotal.textContent = `${itens.length} perito(s) encontrado(s)`;
+
+    if (itens.length === 0) {
+      listaEl.innerHTML = '<div class="text-sm text-muted" style="text-align:center;padding:20px;">Nenhum perito localizado.</div>';
+      return;
+    }
+
+    listaEl.innerHTML = itens.map((item) => `
+      <div class="perito-dir-card">
+        <div class="perito-dir-top">
+          <div class="perito-dir-nome">${escapeHtml(item.nome)}</div>
+          <span class="badge-count ${item.pendentesCount > 0 ? "badge-count-yellow" : "badge-count-green"}">
+            ${item.pautasCount} pauta(s)${item.pendentesCount > 0 ? ` • ${item.pendentesCount} pend.` : ""}
+          </span>
+        </div>
+        <div class="perito-dir-meta">
+          ${item.especialidade ? `🩺 ${escapeHtml(item.especialidade)}<br>` : ""}
+          📍 ${escapeHtml(item.local)}${item.endereco ? ` — ${escapeHtml(item.endereco)}` : ""}
+          ${item.procsPorPauta ? `<br>📋 Padrão: ${escapeHtml(item.procsPorPauta)} vagas${item.intervaloMin ? ` • ${escapeHtml(item.intervaloMin)} min` : ""}` : ""}
+        </div>
+        <button type="button" class="btn btn-outline btn-sm" data-ver-pautas-perito="${escapeHtml(item.nome)}">🔍 Ver pautas na Lista ➔</button>
+      </div>
+    `).join("");
+  }
+
+  function abrirModalConfig() {
+    const modal = document.getElementById("modalConfigMobile");
+    if (!modal || !sessaoUsuario) return;
+
+    aplicarTemaMobile(temaAtualMobile);
+
+    const inpChave = document.getElementById("cfgChaveNuvem");
+    const chkLembrar = document.getElementById("chkCfgLembrarChave");
+    const infoBox = document.getElementById("cfgInfoSistema");
+    if (inpChave) inpChave.value = obterChaveNuvemSessao();
+    if (chkLembrar) {
+      try {
+        chkLembrar.checked = Boolean(localStorage.getItem("maestro_mobile_key_saved"));
+      } catch (e) {
+        chkLembrar.checked = false;
+      }
+    }
+
+    if (infoBox) {
+      const hEsc = ultimaSyncEscalaTs ? new Date(ultimaSyncEscalaTs).toLocaleString("pt-BR") : "Ainda não sincronizado";
+      const hPje = ultimaSyncPautaPjeTs ? new Date(ultimaSyncPautaPjeTs).toLocaleString("pt-BR") : "Sem base PJe";
+      infoBox.innerHTML =
+        `<div><b>Subseção:</b> ${escapeHtml(sessaoUsuario.subsecaoNome || sessaoUsuario.subsecaoId)}</div>` +
+        `<div><b>Projeto Firebase:</b> ${escapeHtml(sessaoUsuario.projectId || "Local")}</div>` +
+        `<div><b>Perfil / Varas:</b> ${escapeHtml(sessaoUsuario.role)} (${escapeHtml(obterLabelEscopoVaras())})</div>` +
+        `<div><b>Última Sync Escala:</b> ${escapeHtml(hEsc)}</div>` +
+        `<div><b>Última Sync Pauta PJe:</b> ${escapeHtml(hPje)}</div>` +
+        `<div><b>Versão PWA:</b> Maestro PJe Mobile v2.4 (SW v9)</div>`;
+    }
+
+    modal.classList.add("open");
+  }
+
+  function fecharModalConfig() {
+    document.getElementById("modalConfigMobile")?.classList.remove("open");
+  }
+
+  function aplicarCodigoConexaoNoModalConfig() {
+    const inp = document.getElementById("cfgCodigoConexao");
+    let raw = String(inp?.value || "").trim();
+    if (!raw) {
+      mostrarToast("Cole o código MAESTRO::... antes de aplicar.", "warn");
+      return;
+    }
+    if (raw.startsWith("MAESTRO::")) raw = raw.slice("MAESTRO::".length);
+    try {
+      const payload = JSON.parse(decodeURIComponent(escape(atob(raw))));
+      if (!payload || !payload.p) throw new Error("Project ID ausente no código.");
+      if (sessaoUsuario) {
+        sessaoUsuario.projectId = payload.p;
+        if (payload.s && SUBSECOES_MAP[payload.s] && obterSubsecoesAutorizadasSessao(sessaoUsuario).includes(payload.s)) {
+          sessaoUsuario.subsecaoId = payload.s;
+          sessaoUsuario.subsecaoNome = SUBSECOES_MAP[payload.s].nome;
+        }
+        localStorage.setItem("maestro_mobile_session", JSON.stringify(sessaoUsuario));
+      }
+      if (payload.k) {
+        const lembrar = Boolean(document.getElementById("chkCfgLembrarChave")?.checked);
+        salvarChaveNuvemSessao(payload.k, lembrar);
+        const cfgChave = document.getElementById("cfgChaveNuvem");
+        if (cfgChave) cfgChave.value = payload.k;
+      }
+      if (inp) inp.value = "";
+      aplicarEscopoSessaoNaUI();
+      fecharModalConfig();
+      mostrarToast("Parâmetros atualizados! Sincronizando...", "success");
+      window.sincronizarPautas(payload.k || obterChaveNuvemSessao());
+    } catch (err) {
+      mostrarToast("Código inválido: " + err.message, "error", 4000);
+    }
+  }
+
+  function salvarChaveNoModalConfig() {
+    const chave = String(document.getElementById("cfgChaveNuvem")?.value || "").trim();
+    const lembrar = Boolean(document.getElementById("chkCfgLembrarChave")?.checked);
+    if (!chave) {
+      mostrarToast("Informe a chave AES-256 antes de salvar.", "warn");
+      return;
+    }
+    salvarChaveNuvemSessao(chave, lembrar);
+    fecharModalConfig();
+    mostrarToast("Chave AES atualizada. Sincronizando dados...", "success");
+    window.sincronizarPautas(chave);
+  }
+
+  async function limparCachePwaERecarregar() {
+    try {
+      if ("caches" in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+      if ("serviceWorker" in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+    } catch (e) {}
+    window.location.reload();
+  }
 
   // =========================================================================
   // 11. NAVEGAÇÃO DE ABAS
@@ -3779,20 +5045,34 @@ async function revalidarSessaoNaNuvem() {
     if (tab) tab.classList.add("active");
     if (btn) btn.classList.add("active");
     if (tabId === "tabPorDia") renderizarAbaPorDia();
+    if (tabId === "tabRelatorios") atualizarResumoFiltroRelatorio();
   };
 
-  // Service Worker apenas em origem HTTP/HTTPS (PWA Android; evita aviso em chrome-extension://)
+  // Service Worker apenas em origem HTTP/HTTPS (atualização discreta sem interromper edição)
   if ("serviceWorker" in navigator && (window.location.protocol === "https:" || window.location.protocol === "http:")) {
-    let swRefreshing = false;
+    const exibirBannerAtualizacaoPwa = () => {
+      const banner = document.getElementById("bannerAtualizacaoPwa");
+      if (banner) banner.style.display = "flex";
+    };
+
     navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (swRefreshing) return;
-      swRefreshing = true;
-      window.location.reload();
+      exibirBannerAtualizacaoPwa();
     });
 
     window.addEventListener("load", () => {
       navigator.serviceWorker.register("./sw.js")
-        .then((reg) => console.log("[Maestro Mobile] Service Worker registrado:", reg.scope))
+        .then((reg) => {
+          console.log("[Maestro Mobile] Service Worker registrado:", reg.scope);
+          reg.addEventListener("updatefound", () => {
+            const newWorker = reg.installing;
+            if (!newWorker) return;
+            newWorker.addEventListener("statechange", () => {
+              if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+                exibirBannerAtualizacaoPwa();
+              }
+            });
+          });
+        })
         .catch((err) => console.warn("[Maestro Mobile] Falha no Service Worker:", err));
     });
   }

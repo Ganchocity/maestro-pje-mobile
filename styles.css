@@ -35,7 +35,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg-app: #0F172A;
     --surface: #1E293B;
     --text-main: #F8FAFC;
@@ -44,6 +44,54 @@
     --slate-100: #1E293B;
     --slate-200: #334155;
     --primary-light: rgba(2, 132, 199, 0.15);
+  }
+}
+
+:root[data-theme="light"] {
+  --bg-app: #F8FAFC;
+  --surface: #FFFFFF;
+  --text-main: #0F172A;
+  --text-muted: #64748B;
+  --border: #E2E8F0;
+  --slate-100: #F1F5F9;
+  --slate-200: #E2E8F0;
+  --primary-light: #E0F2FE;
+}
+
+:root[data-theme="dark"] {
+  --bg-app: #0F172A;
+  --surface: #1E293B;
+  --text-main: #F8FAFC;
+  --text-muted: #94A3B8;
+  --border: #334155;
+  --slate-100: #1E293B;
+  --slate-200: #334155;
+  --primary-light: rgba(2, 132, 199, 0.18);
+}
+
+:root[data-theme="dark"] .dia-cal-cell.is-selected {
+  color: #FFFFFF;
+}
+
+:root[data-theme="dark"] .badge-role-master {
+  color: #FBBF24;
+}
+
+:root[data-theme="dark"] .pauta-obs,
+:root[data-theme="dark"] .btn-copy-proc {
+  color: var(--text-main);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .dia-cal-cell.is-selected {
+    color: #FFFFFF;
+  }
+  :root:not([data-theme="light"]) .badge-role-master {
+    color: #FBBF24;
+  }
+  :root:not([data-theme="light"]) .pauta-obs,
+  :root:not([data-theme="light"]) .btn-copy-proc {
+    color: var(--text-main);
   }
 }
 
@@ -1349,6 +1397,7 @@ input, textarea, select {
 
 .dia-nav-date-text {
   font-size: 12.5px;
+
   font-weight: 700;
   color: var(--primary);
 }
@@ -1731,6 +1780,398 @@ input, textarea, select {
 }
 
 /* ==========================================================
+   MELHORIAS v2.4: SYNC, DRILL-DOWN, PRAZOS, AÇÕES, MODAIS & TOASTS
+   ========================================================== */
+.sync-timestamp {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.pwa-update-banner {
+  background: var(--primary-light);
+  border-bottom: 1px solid var(--primary);
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary-dark);
+}
+
+.dash-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.dash-filter-bar label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.dash-filter-bar .form-select-sm {
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
+.kpi-card.is-clickable,
+.vara-row.is-clickable {
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.15s ease;
+}
+
+.kpi-card.is-clickable:active,
+.vara-row.is-clickable:active {
+  transform: scale(0.98);
+  border-color: var(--primary);
+}
+
+.prazo-alert-card {
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.prazo-alert-info {
+  font-size: 12px;
+  color: var(--text-main);
+}
+
+.prazo-alert-info strong {
+  display: block;
+  color: var(--warning-dark);
+  margin-bottom: 2px;
+}
+
+.dia-quick-row {
+  flex-wrap: wrap;
+}
+
+.dia-salas-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.dia-sala-pill {
+  flex: 1;
+  min-width: 130px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dia-sala-pill.is-over {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: var(--danger);
+}
+
+.pill-slate.active {
+  background: var(--slate-600);
+  border-color: var(--slate-600);
+}
+
+.pill-amber.active {
+  background: var(--warning-dark);
+  border-color: var(--warning-dark);
+}
+
+.filter-sort-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.filter-sort-row .form-select-sm {
+  flex: 1;
+  padding: 8px 10px;
+  font-size: 12.5px;
+}
+
+.status-badge-em-marcacao {
+  background: rgba(2, 132, 199, 0.15);
+  color: var(--primary-dark);
+}
+
+:root[data-theme="dark"] .status-badge-em-marcacao {
+  color: #7DD3FC;
+}
+
+.pauta-card.status-em-marcacao {
+  border-left-color: var(--primary);
+}
+
+.pauta-prazo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  margin-top: 6px;
+}
+
+.pauta-prazo-badge.is-vencido {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+
+.pauta-prazo-badge.is-urgente {
+  background: rgba(245, 158, 11, 0.18);
+  color: var(--warning-dark);
+}
+
+.pauta-prazo-badge.is-normal {
+  background: var(--slate-100);
+  color: var(--text-muted);
+}
+
+.pauta-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.btn-card-action {
+  border: 1px solid var(--border);
+  background: var(--slate-100);
+  color: var(--text-main);
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn-card-action:active {
+  transform: scale(0.97);
+}
+
+.btn-card-danger {
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+  margin-left: auto;
+}
+
+.rel-filter-summary {
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--primary-light);
+  color: var(--primary-dark);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+:root[data-theme="dark"] .rel-filter-summary {
+  color: #BAE6FD;
+}
+
+/* ==========================================================
+   MODAIS INFERIORES (BOTTOM SHEET) & DIRETÓRIO / CONFIG
+   ========================================================== */
+.app-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.62);
+  display: none;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 200;
+  padding: 12px;
+}
+
+.app-modal.open {
+  display: flex;
+}
+
+.app-modal-sheet {
+  width: 100%;
+  max-width: 560px;
+  max-height: 90vh;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--slate-100);
+}
+
+.app-modal-header h4 {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.app-modal-body {
+  padding: 14px 16px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.app-modal-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  background: var(--surface);
+}
+
+.perito-dir-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.perito-dir-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.perito-dir-nome {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+.perito-dir-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.theme-toggle-group {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.theme-btn {
+  padding: 9px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--slate-100);
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.theme-btn.active {
+  background: var(--primary);
+  color: #FFFFFF;
+  border-color: var(--primary);
+}
+
+.cfg-section {
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cfg-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.cfg-info-box {
+  background: var(--slate-100);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+/* ==========================================================
+   NOTIFICAÇÕES TOAST
+   ========================================================== */
+.toast-container {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - 28px);
+  max-width: 460px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 300;
+  pointer-events: none;
+}
+
+.maestro-toast {
+  background: #0F172A;
+  color: #FFFFFF;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: var(--shadow-lg);
+  border-left: 4px solid var(--primary);
+  opacity: 0.98;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.maestro-toast.toast-success { border-left-color: var(--secondary); }
+.maestro-toast.toast-warn { border-left-color: var(--warning); }
+.maestro-toast.toast-error { border-left-color: var(--danger); }
+.maestro-toast.is-hiding { opacity: 0; transform: translateY(6px); }
+
+/* ==========================================================
    ESTILOS DE IMPRESSÃO / PDF OFICIAL
    ========================================================== */
 @media print {
@@ -1739,7 +2180,7 @@ input, textarea, select {
     color: #000000 !important;
   }
 
-  .app-header, .user-status-strip, .main-tabs, .preview-actions, .quick-actions, .filters-card, .wpp-offline-banner, #tabWhatsapp, #tabPorDia {
+  .app-header, .user-status-strip, .main-tabs, .pwa-update-banner, .preview-actions, .quick-actions, .filters-card, .wpp-offline-banner, #tabWhatsapp, #tabPorDia, .app-modal, .toast-container {
     display: none !important;
   }
 
