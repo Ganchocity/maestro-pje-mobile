@@ -811,7 +811,10 @@
 
     // Relatórios + Filtros do Relatório
     document.getElementById("relFiltroPeriodo")?.addEventListener("change", atualizarEstadoFiltrosRelatorio);
-    document.getElementById("relFiltroMesInput")?.addEventListener("change", atualizarResumoFiltroRelatorio);
+    document.getElementById("relFiltroMesInput")?.addEventListener("change", (e) => {
+      if (e.target) e.target.dataset.manual = "true";
+      atualizarResumoFiltroRelatorio();
+    });
     document.getElementById("relFiltroVara")?.addEventListener("change", atualizarResumoFiltroRelatorio);
     document.getElementById("relFiltroSituacao")?.addEventListener("change", atualizarResumoFiltroRelatorio);
     document.getElementById("btnRelPdfMes")?.addEventListener("click", () => window.gerarRelatorioPdf("filtrado"));
@@ -1596,10 +1599,10 @@
     sessaoUsuario.subsecaoId = novaSubId;
     sessaoUsuario.subsecaoNome = subInfo.nome;
     sessaoUsuario.subsecaoDesc = subInfo.descricao;
+
     localStorage.setItem("maestro_mobile_session", JSON.stringify(sessaoUsuario));
 
     todasPericiasPje = [];
-
     pautasParaImportar = [];
     const areaPrev = document.getElementById("areaPreviewImportWpp");
     if (areaPrev) areaPrev.style.display = "none";
@@ -1642,7 +1645,7 @@
     if (!select) return;
     const lista = Array.isArray(varas) ? varas : [];
     if (lista.length === 1) {
-      select.innerHTML = `<option value="${escapeHtml(lista[0])}">${escapeHtml(lista[0])}ª Vara Federal (Exclusiva)</option>`;
+      select.innerHTML = `<option value="${escapeHtml(lista[0])}">${escapeHtml(lista[0])}ª Vara (Exclusiva)</option>`;
       select.value = lista[0];
       select.disabled = true;
       select.title = `Acesso exclusivo à ${lista[0]}ª Vara Federal`;
@@ -1650,11 +1653,11 @@
     }
     select.disabled = false;
     select.title = "";
-    select.innerHTML = '<option value="">Todas as Varas Autorizadas</option>';
+    select.innerHTML = '<option value="">Todas as Varas</option>';
     lista.forEach((v) => {
       const opt = document.createElement("option");
       opt.value = v;
-      opt.textContent = `${v}ª Vara Federal`;
+      opt.textContent = `${v}ª Vara`;
       select.appendChild(opt);
     });
   }
@@ -2399,8 +2402,9 @@
     infoEl.innerHTML = `<div class="wpp-alert-pill">⚡ <b>${escapeHtml(match.nome)}</b>: ${modoDesc} • ${r.intervaloMin} min${r.localExternoPadrao ? ` • 🏥 ${escapeHtml(r.localExternoPadrao)}` : ""}</div>`;
   }
 
-  function interpretarTextoWhatsApp() {
+  }
 
+  function interpretarTextoWhatsApp() {
     if (!podeEnviarPautasNaSessao()) {
       alert("👁️ Seu perfil é Somente Leitura e não possui permissão para importar pautas.");
       return;
@@ -3195,13 +3199,38 @@
     const inp = document.getElementById("relFiltroMesInput");
     if (!inp) return;
     const mesIso = `${anoAtivo}-${String(mesAtivo + 1).padStart(2, "0")}`;
-    if (!inp.value || inp.dataset.manual !== "true") {
+    const valorAnterior = inp.value;
+
+    const mesesAbrev = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+    const mesesSet = new Set([mesIso]);
+
+    (todasPautas || []).forEach((p) => {
+      const m = String(p?.data || "").match(/^(\d{4}-\d{2})-/);
+      if (m) mesesSet.add(m[1]);
+    });
+
+    const baseHoje = new Date();
+    for (let delta = -3; delta <= 12; delta++) {
+      const d = new Date(baseHoje.getFullYear(), baseHoje.getMonth() + delta, 1);
+      mesesSet.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    }
+
+    const ordenados = Array.from(mesesSet).sort();
+    inp.innerHTML = ordenados.map((ym) => {
+      const [anoStr, mesStr] = ym.split("-");
+      const idx = (parseInt(mesStr, 10) || 1) - 1;
+      const label = `${mesesAbrev[idx] || mesStr}/${anoStr}`;
+      return `<option value="${escapeHtml(ym)}">${escapeHtml(label)}</option>`;
+    }).join("");
+
+    if (inp.dataset.manual === "true" && valorAnterior && mesesSet.has(valorAnterior)) {
+      inp.value = valorAnterior;
+    } else {
       inp.value = mesIso;
     }
   }
 
   window.alterarMes = function (delta) {
-
     mesAtivo += delta;
     if (mesAtivo > 11) {
       mesAtivo = 0;
@@ -4002,7 +4031,6 @@
       if (ordenacaoFiltro === "prazo_asc") {
         const pa = resolverPrazoInfoPauta(a)?.prazoDias ?? 9999;
         const pb = resolverPrazoInfoPauta(b)?.prazoDias ?? 9999;
-
         return pa - pb || (a.data || "").localeCompare(b.data || "");
       }
       return (a.data || "").localeCompare(b.data || "") || (a.horaInicio || "").localeCompare(b.horaInicio || "");
@@ -4014,6 +4042,7 @@
   function renderizarCardsPautas() {
     const container = document.getElementById("listaPautasCards");
     const lblCount = document.getElementById("lblQtdPautasFiltradas");
+
     if (!container || !lblCount) return;
     container.innerHTML = "";
 
@@ -4413,12 +4442,12 @@
     setVal("editPeritoNome", pauta.peritoNome || "");
     setVal("editEspecialidade", pauta.especialidade || "");
     setVal("editData", pauta.data || "");
-    setVal("editHoraInicio", pauta.horaInicio || pauta.hora || "08:00");
+    setVal("editHoraInicio", pauta.horaInicio || p.hora || "08:00");
     setVal("editQuantidade", pauta.quantidade !== undefined ? pauta.quantidade : (pauta.vagas || 20));
     setVal("editIntervaloMin", pauta.intervaloMin !== undefined ? pauta.intervaloMin : (pauta.duracao || 10));
     setVal("editSituacao", pauta.situacao || "Não marcado");
     setVal("editEndereco", pauta.endereco || "");
-    setVal("editObservacoes", pauta.observacoes || pauta.observacao || "");
+    setVal("editObservacoes", pauta.observacoes || p.observacao || "");
 
     atualizarVisibilidadeEnderecoModalEditar();
     atualizarPreviewCalcModalEditar();
@@ -4803,7 +4832,6 @@
     let txt = `⚖️ *MAESTRO PJE - RESUMO DE PAUTAS*\n`;
     txt += `📍 *Subseção:* ${escopoTxt}${varaFiltro ? ` • ${normalizarNumeroVara(varaFiltro)}ª VF` : ""}\n`;
     txt += `📅 *Período:* ${perLabel}\n`;
-
     txt += `🎯 *Situação:* ${descreverFiltroSituacaoLabel(sitFiltro)}\n\n`;
     txt += `📊 *NÚMEROS GERAIS:*\n`;
     txt += `• *Total de Blocos:* ${lista.length} pautas\n`;
@@ -4815,6 +4843,7 @@
       txt += `• *${v}:* ${varasMap[v].tot} vagas (${varasMap[v].m} marcadas / ${varasMap[v].p} pendentes)\n`;
     });
     txt += `\n_Relatório gerado em ${new Date().toLocaleDateString("pt-BR")} via Maestro PJe Mobile_`;
+
     return txt;
   }
 
@@ -4956,7 +4985,7 @@
         `<div><b>Perfil / Varas:</b> ${escapeHtml(sessaoUsuario.role)} (${escapeHtml(obterLabelEscopoVaras())})</div>` +
         `<div><b>Última Sync Escala:</b> ${escapeHtml(hEsc)}</div>` +
         `<div><b>Última Sync Pauta PJe:</b> ${escapeHtml(hPje)}</div>` +
-        `<div><b>Versão PWA:</b> Maestro PJe Mobile v2.4 (SW v9)</div>`;
+        `<div><b>Versão PWA:</b> Maestro PJe Mobile v2.5 (SW v10)</div>`;
     }
 
     modal.classList.add("open");

@@ -4,8 +4,10 @@
  */
 
 :root {
+  color-scheme: light;
   --primary: #0284C7;
   --primary-dark: #0369A1;
+  --primary-text: #0369A1;
   --primary-light: #E0F2FE;
   --secondary: #10B981;
   --secondary-dark: #059669;
@@ -36,6 +38,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg-app: #0F172A;
     --surface: #1E293B;
     --text-main: #F8FAFC;
@@ -44,10 +47,12 @@
     --slate-100: #1E293B;
     --slate-200: #334155;
     --primary-light: rgba(2, 132, 199, 0.15);
+    --primary-text: #7DD3FC;
   }
 }
 
 :root[data-theme="light"] {
+  color-scheme: light;
   --bg-app: #F8FAFC;
   --surface: #FFFFFF;
   --text-main: #0F172A;
@@ -56,9 +61,11 @@
   --slate-100: #F1F5F9;
   --slate-200: #E2E8F0;
   --primary-light: #E0F2FE;
+  --primary-text: #0369A1;
 }
 
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg-app: #0F172A;
   --surface: #1E293B;
   --text-main: #F8FAFC;
@@ -67,6 +74,7 @@
   --slate-100: #1E293B;
   --slate-200: #334155;
   --primary-light: rgba(2, 132, 199, 0.18);
+  --primary-text: #7DD3FC;
 }
 
 :root[data-theme="dark"] .dia-cal-cell.is-selected {
@@ -209,7 +217,7 @@ input, textarea, select {
   letter-spacing: 0.5px;
 }
 
-.form-control, .form-select-sm {
+.form-control {
   width: 100%;
   padding: 12px 14px;
   font-size: 14px;
@@ -218,6 +226,21 @@ input, textarea, select {
   background: var(--surface);
   color: var(--text-main);
   outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.form-select-sm {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 9px 10px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-main);
+  outline: none;
+  text-overflow: ellipsis;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
@@ -362,10 +385,13 @@ input, textarea, select {
 .app-header {
   background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
   color: #FFFFFF;
-  padding: 12px 16px;
+  padding: 10px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  min-height: 54px;
+  flex-wrap: nowrap;
   box-shadow: var(--shadow-sm);
   position: sticky;
   top: 0;
@@ -375,27 +401,39 @@ input, textarea, select {
 .header-left {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
 }
 
 .app-badge {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.3px;
   color: var(--primary);
   background: rgba(2, 132, 199, 0.2);
   border: 1px solid rgba(2, 132, 199, 0.4);
-  padding: 2px 8px;
+  padding: 3px 6px;
   border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .user-subsecao-badge {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
   font-size: 13px;
   font-weight: 700;
   color: #FFFFFF;
+}
+
+#lblNomeSubsecao {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-subsecao-select {
@@ -403,12 +441,15 @@ input, textarea, select {
   color: #FFFFFF;
   border: 1px solid rgba(255, 255, 255, 0.28);
   border-radius: 6px;
-  padding: 3px 8px;
-  font-size: 12.5px;
+  padding: 4px 6px;
+  font-size: 12px;
   font-weight: 700;
   outline: none;
   cursor: pointer;
-  max-width: 185px;
+  width: 100%;
+  min-width: 0;
+  max-width: 140px;
+  text-overflow: ellipsis;
 }
 
 .header-subsecao-select option {
@@ -423,7 +464,7 @@ input, textarea, select {
   cursor: not-allowed;
   background: var(--primary-light);
   border-color: var(--primary);
-  color: var(--primary-dark);
+  color: var(--primary-text);
   font-weight: 700;
 }
 
@@ -432,21 +473,31 @@ input, textarea, select {
   height: 8px;
   border-radius: 50%;
   background: #34D399;
+  flex-shrink: 0;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
 }
 
 .btn-icon {
   background: rgba(255, 255, 255, 0.1);
   border: none;
   color: #FFFFFF;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: 15px;
   cursor: pointer;
-  margin-left: 6px;
+  margin-left: 0;
+  flex-shrink: 0;
 }
 
 .btn-icon:active {
@@ -459,16 +510,19 @@ input, textarea, select {
 .user-status-strip {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  padding: 10px 16px;
+  padding: 10px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 
 .status-info {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+  flex: 1;
 }
 
 .user-avatar {
@@ -478,6 +532,7 @@ input, textarea, select {
 .user-details {
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 .user-name {
@@ -487,7 +542,7 @@ input, textarea, select {
 
 .user-scope {
   font-size: 11px;
-  color: var(--primary);
+  color: var(--primary-text);
   font-weight: 600;
 }
 
@@ -510,7 +565,7 @@ input, textarea, select {
 
 .badge-role-leitor {
   background: rgba(2, 132, 199, 0.14);
-  color: var(--primary-dark);
+  color: var(--primary-text);
   border-color: rgba(2, 132, 199, 0.35);
 }
 
@@ -528,7 +583,7 @@ input, textarea, select {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   position: sticky;
-  top: 58px;
+  top: 54px;
   z-index: 40;
 }
 
@@ -779,6 +834,7 @@ input, textarea, select {
 /* ==========================================================
    FILTROS E PESQUISA DE PAUTAS
    ========================================================== */
+
 .filters-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -859,6 +915,14 @@ input, textarea, select {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 8px;
+}
+
+.filter-row > *,
+.dia-filter-inputs > *,
+.wpp-defaults-grid > *,
+.wpp-card-grid-2 > *,
+.wpp-card-grid-3 > * {
+  min-width: 0;
 }
 
 .results-info {
@@ -1003,6 +1067,11 @@ input, textarea, select {
 .icon-csv { background: rgba(16, 185, 129, 0.1); color: var(--secondary); }
 .icon-wpp { background: rgba(37, 211, 102, 0.1); color: #25D366; }
 
+.report-details {
+  flex: 1;
+  min-width: 0;
+}
+
 .report-details h5 {
   font-size: 14px;
   font-weight: 700;
@@ -1027,7 +1096,7 @@ input, textarea, select {
   padding: 2px 8px;
   border-radius: 12px;
   background: var(--primary-light);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .report-preview-box {
@@ -1062,7 +1131,7 @@ input, textarea, select {
   display: block;
   font-size: 11px;
   font-weight: 800;
-  color: var(--primary-dark);
+  color: var(--primary-text);
   text-transform: uppercase;
   margin-bottom: 6px;
 }
@@ -1397,7 +1466,6 @@ input, textarea, select {
 
 .dia-nav-date-text {
   font-size: 12.5px;
-
   font-weight: 700;
   color: var(--primary);
 }
@@ -1798,7 +1866,7 @@ input, textarea, select {
   gap: 10px;
   font-size: 12px;
   font-weight: 700;
-  color: var(--primary-dark);
+  color: var(--primary-text);
 }
 
 .dash-filter-bar {
@@ -1917,11 +1985,7 @@ input, textarea, select {
 
 .status-badge-em-marcacao {
   background: rgba(2, 132, 199, 0.15);
-  color: var(--primary-dark);
-}
-
-:root[data-theme="dark"] .status-badge-em-marcacao {
-  color: #7DD3FC;
+  color: var(--primary-text);
 }
 
 .pauta-card.status-em-marcacao {
@@ -1991,14 +2055,10 @@ input, textarea, select {
   padding: 7px 10px;
   border-radius: 8px;
   background: var(--primary-light);
-  color: var(--primary-dark);
+  color: var(--primary-text);
   font-size: 12px;
   font-weight: 700;
   text-align: center;
-}
-
-:root[data-theme="dark"] .rel-filter-summary {
-  color: #BAE6FD;
 }
 
 /* ==========================================================
@@ -2170,6 +2230,63 @@ input, textarea, select {
 .maestro-toast.toast-warn { border-left-color: var(--warning); }
 .maestro-toast.toast-error { border-left-color: var(--danger); }
 .maestro-toast.is-hiding { opacity: 0; transform: translateY(6px); }
+
+/* ==========================================================
+   RESPONSIVIDADE EXTRA PARA TELAS COMPACTAS (<= 400PX / S25)
+   ========================================================== */
+@media (max-width: 400px) {
+  .main-content {
+    padding: 12px;
+  }
+
+  .app-header {
+    padding: 9px 10px;
+    gap: 6px;
+    min-height: 50px;
+  }
+
+  .main-tabs {
+    top: 50px;
+  }
+
+  .app-badge {
+    font-size: 9.5px;
+    padding: 3px 5px;
+    letter-spacing: 0.2px;
+  }
+
+  .header-right {
+    gap: 4px;
+  }
+
+  .btn-icon {
+    width: 30px;
+    height: 30px;
+    font-size: 14px;
+  }
+
+  .form-select-sm {
+    padding: 8px 8px;
+    font-size: 12.5px;
+  }
+
+  .report-action-card {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .report-icon-box {
+    width: 38px;
+    height: 38px;
+    font-size: 19px;
+  }
+
+  .dia-quick-row .btn {
+    flex: 1 1 calc(33.33% - 6px);
+    font-size: 11px;
+    padding: 7px 4px;
+  }
+}
 
 /* ==========================================================
    ESTILOS DE IMPRESSÃO / PDF OFICIAL

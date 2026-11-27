@@ -6,7 +6,7 @@
  *  - Navegação / Share Target: Network-First com fallback para ./index.html.
  *  - Assets estáticos locais: Stale-While-Revalidate mantendo atualização automática silenciosa.
  */
-const CACHE_NAME = 'maestro-pje-mobile-v9';
+const CACHE_NAME = 'maestro-pje-mobile-v10';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
