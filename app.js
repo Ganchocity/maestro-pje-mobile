@@ -2402,7 +2402,6 @@
     infoEl.innerHTML = `<div class="wpp-alert-pill">⚡ <b>${escapeHtml(match.nome)}</b>: ${modoDesc} • ${r.intervaloMin} min${r.localExternoPadrao ? ` • 🏥 ${escapeHtml(r.localExternoPadrao)}` : ""}</div>`;
   }
 
-  }
 
   function interpretarTextoWhatsApp() {
     if (!podeEnviarPautasNaSessao()) {
@@ -3229,6 +3228,7 @@
       inp.value = mesIso;
     }
   }
+
 
   window.alterarMes = function (delta) {
     mesAtivo += delta;
@@ -4442,12 +4442,12 @@
     setVal("editPeritoNome", pauta.peritoNome || "");
     setVal("editEspecialidade", pauta.especialidade || "");
     setVal("editData", pauta.data || "");
-    setVal("editHoraInicio", pauta.horaInicio || p.hora || "08:00");
+    setVal("editHoraInicio", pauta.horaInicio || pauta.hora || "08:00");
     setVal("editQuantidade", pauta.quantidade !== undefined ? pauta.quantidade : (pauta.vagas || 20));
     setVal("editIntervaloMin", pauta.intervaloMin !== undefined ? pauta.intervaloMin : (pauta.duracao || 10));
     setVal("editSituacao", pauta.situacao || "Não marcado");
     setVal("editEndereco", pauta.endereco || "");
-    setVal("editObservacoes", pauta.observacoes || p.observacao || "");
+    setVal("editObservacoes", pauta.observacoes || pauta.observacao || "");
 
     atualizarVisibilidadeEnderecoModalEditar();
     atualizarPreviewCalcModalEditar();
